@@ -1,0 +1,1042 @@
+---
+title: "Fig. 1 Study design and community analysis of gut microbiome data"
+author: "Baidefeng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("MMUPHin")
+
+library(reshape2)
+library(vegan)
+library(ggplot2)
+library(ggpubr)
+library(patchwork)
+library(ape)
+library(tidyr)
+library(MMUPHin)
+library(magrittr)
+library(dplyr)
+library(scales)
+library(multcompView)
+library(ggsignif)
+library(amplicon)
+library(ggrepel)
+library(rdacca.hp)
+library(psych)
+library(cowplot)
+
+mytheme = theme_bw() + theme(text = element_text(family = "sans", size = 8))+
+    theme(legend.position="none",
+    legend.text = element_text(size=10),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=10, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=10, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=10, family = "sans"),
+    strip.text.x = element_text(size=10, angle = 0),
+    strip.text.y = element_text(size=10, angle = 0),
+    plot.title = element_text(size=10, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+    theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+    theme(axis.line = element_line(size = 0.1, colour = "black"))
+```
+
+
+
+
+## Alpha and beta diversity index calculation
+
+Alpha and beta diversity index calculation
+
+Species
+
+```{r Alpha diversity index}
+# The collinearity of cofounders
+################################################################################
+library(performance)
+library(see)
+data <- read.table(paste("data/group779.txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+
+# Linear regression
+linear_model <- lm(Group ~ Age + Sex + BMI + smoke + drink, data = data)
+
+# Calculate VIF and plot
+pdf("results/collinearity2.pdf")
+plot(check_collinearity(linear_model))
+dev.off()
+################################################################################
+
+
+#### Species α diversity ####
+################################################################################
+otutable <- read.table(paste("data/Metaphlan4_bacteria_species.txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+metadata = read.table(paste("data/group.txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+metadata$Group <- NULL
+colnames(metadata)[4] <- 'Group'
+
+level = otutable
+level = as.data.frame(level)
+level$Species <- rownames(level)
+level <- level[, c(780, 1:779)]
+
+level = melt(level,id.vars= colnames(level)[1],
+              measure.vars = colnames(level[,2:ncol(level)]),
+              variable.name = "sample",value.name = "relative_abundance")
+#level = dcast(level, otutable[, i] ~ sample, fun.aggregate = sum)
+level = dcast(level, level[, 1] ~ sample, fun.aggregate = sum)
+#RA transposition
+level = t(level)
+colnames(level) = level[1,]
+level = level[-1,]
+level = data.frame(level,stringsAsFactors = F) 
+colnames(level) = gsub('\\.','',colnames(level))
+level1 = apply(level,2,as.numeric)
+rownames(level1)=rownames(level)
+level=level1
+
+# Calculate diversity
+level_diversity = data.frame(#Sample_ID = colnames(level),
+                              observed_species=specnumber(level),
+                              shannon=vegan::diversity(level, index="shannon"),
+                              simpson=vegan::diversity(level, index="simpson"),
+                              invsimpson=vegan::diversity(level, index="invsimpson"),
+                              Pielou_evenness=vegan::diversity(level,
+                              index="shannon")/log(specnumber(level)))
+  
+# Export diversity table
+write.table(level_diversity, file = paste0('results/',colnames(level)[1],'_alpha_diversity.txt'),
+            quote = FALSE, sep = "\t", row.names = FALSE,col.names = TRUE)
+################################################################################
+
+
+#### Species β diversity ####
+################################################################################
+level = otutable
+level = as.data.frame(level)
+level$Species <- rownames(level)
+level <- level[, c(780, 1:779)]
+level = melt(level,id.vars= colnames(level)[1],
+             measure.vars = colnames(level[,2:ncol(level)]),
+             variable.name = "sample",value.name = "relative_abundance")
+#level = dcast(level, otutable[, i] ~ sample, fun.aggregate = sum)
+level = dcast(level, level[, 1] ~ sample, fun.aggregate = sum)
+#RA transposition
+level = t(level)
+colnames(level) = level[1,]
+level = level[-1,]
+level = data.frame(level,stringsAsFactors = F) 
+colnames(level) = gsub('\\.','',colnames(level))
+level1 = apply(level,2,as.numeric)
+rownames(level1)=rownames(level)
+level=level1
+
+DCA=decorana(level)
+#DCA=summary(DCA)
+
+RA <- otutable
+RA[,1:ncol(RA)] <- apply(RA[,1:ncol(RA)],2, function(x) x / sum(x) )
+RA = as.data.frame(RA)
+RA$Species <- rownames(RA)
+RA <- RA[, c(780, 1:779)]
+
+level = otutable
+level = as.data.frame(level)
+level$Species <- rownames(level)
+level <- level[, c(780, 1:779)]
+level = melt(level,id.vars= colnames(level)[1],
+              measure.vars = colnames(level[,2:ncol(level)]),
+              variable.name = "Sample_ID",value.name = "relative_abundance")
+#level = dcast(level, RA[, i] ~ Sample_ID, fun.aggregate = sum)
+level = dcast(level, RA[, 1] ~ Sample_ID, fun.aggregate = sum)
+#RA transposition
+level = t(level)
+colnames(level) = level[1,]
+level = level[-1,]
+level = data.frame(level,stringsAsFactors = F) 
+colnames(level) = gsub('\\.','',colnames(level))
+level1 = apply(level,2,as.numeric)
+rownames(level1)=rownames(level)
+level <- as.data.frame(level1)
+
+level.reset = level
+level.reset$Sample_ID <- rownames(level.reset)
+level.reset <- merge(metadata, level.reset, by='Sample_ID')
+colnames(level.reset)[3] = 'Group2'
+
+rownames(level.reset) = level.reset[,1]
+
+level_distance = vegdist(level.reset[,-c(1:12)])  #default method was "bray"
+level_distance = as.matrix(level_distance)
+# Export bray curtis  matrix
+write.table(level_distance, file = paste0('results/',colnames(level)[1],'_beta_diversity.txt'),
+            quote = FALSE, sep = "\t", row.names = FALSE,col.names = TRUE)
+################################################################################
+```
+
+
+
+## Alpha diversity boxplots
+
+Alpha diversity index plots for two group compare: NPC and Healthy controls
+
+```{r alpha_boxplot, echo = TRUE}
+
+# Source and edited from package amplicon
+alpha_boxplot2 <- function(alpha_div, metadata, index = "shannon", groupID = "group", levels = c(), outlier = FALSE){
+  p_list = c("ggplot2", "dplyr", "multcompView")
+    for (p in p_list) {
+        if (!requireNamespace(p)) {
+            install.packages(p)
+        }
+        suppressPackageStartupMessages(library(p, character.only = TRUE, 
+            quietly = TRUE, warn.conflicts = FALSE))
+    }
+  idx = rownames(metadata) %in% rownames(alpha_div)
+  metadata = metadata[idx, , drop = F]
+  alpha_div = alpha_div
+  idx = rownames(metadata) %in% rownames(alpha_div)
+  metadata = metadata[idx, , drop = F]
+  alpha_div = alpha_div[rownames(metadata), ]
+  sampFile = as.data.frame(metadata[, groupID], row.names = row.names(metadata))
+  df = cbind(alpha_div[rownames(sampFile), index], sampFile)
+  colnames(df) = c(index, "group")
+  max = max(df[, c(index)])
+  min = min(df[, index])
+  x = df[, c("group", index)]
+  y = x %>% group_by(group) %>% summarise_(Max = paste("max(", index, ")", sep = ""))
+  y = as.data.frame(y)
+  rownames(y) = y$group
+  df$y = y[as.character(df$group), ]$Max + (max - min) * 0.05
+  levels(as.factor(df$group))
+  df = df %>%
+    mutate(group = ordered(df$group,levels=levels))
+  df$class = index
+  compaired = list(c(levels[1], levels[2]))
+  wt = wilcox.test(df[[index]] ~ df$group, alternative=c("two.sided"))
+  FDR = p.adjust(wt$p.value, method = "BH")
+  p1 = ggplot(df, aes(x = group, y = .data[[index]])) +
+    geom_jitter(aes(color=group),position = position_jitter(0.15), size = 0.3, alpha = 1) +
+    geom_boxplot(position=position_dodge(width =0.4),width=0.5, size = 0.4,
+               fill = "transparent", 
+               outlier.shape = NA,
+               linetype = "dashed", color = "black") +
+    stat_boxplot(aes(ymin=..lower..,ymax=..upper..,
+                   fill=group
+                   ),
+               color="black",
+               fill = "transparent",position=position_dodge(width =0.4),width=0.5, size = 0.4,outlier.shape = NA)+
+    stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.18,color="black",size = 0.4)+
+    stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.18,color="black",size = 0.4)+
+    labs(x = NULL, y = NULL, color = groupID) + 
+    scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+    scale_fill_manual(values = c("#74add1","#a60026"))+
+    scale_color_manual(values = c("#74add1","#a60026"))+
+    geom_signif(comparisons = compaired,
+              step_increase = 0.3,
+              map_signif_level = F,
+              test = wilcox.test,
+              color = "black",
+              size = 0.2,
+              textsize = 3
+              )+
+    mytheme+
+    facet_grid(.~class)
+  p1
+}
+
+alpha_div <- level_diversity
+metadata2 <- as.data.frame(metadata)
+
+p1 <- alpha_boxplot2(alpha_div, metadata2, index = "shannon", groupID = "Group2", levels = c("Control", "NPC"))+
+  scale_y_continuous(limits = c(0,4.7))
+ggsave(paste("results/Figure_1B1",".pdf", sep=""), p1, width=45 * 1.5, height=75 * 1.5, unit='mm')
+# p2 <- alpha_boxplot2(alpha_div, metadata2, index = "invsimpson", groupID = "Group2", levels = c("Control", "NPC"))+
+#   scale_y_continuous(limits = c(0,55))
+# ggsave(paste("results_last/Figure_1B2",".pdf", sep=""), p2, width=45 * 1.5, height=75 * 1.5, unit='mm')
+# p3 <- alpha_boxplot2(alpha_div, metadata2, index = "Pielou_evenness", groupID = "Group2", levels = c("Control", "NPC"))+
+#   scale_y_continuous(limits = c(0,0.85))
+# ggsave(paste("results_last/Figure_1B3",".pdf", sep=""), p3, width=45 * 1.5, height=75 * 1.5, unit='mm')
+```
+
+
+
+## Beta diversity PCoA
+
+Functions to plot pcoa plots
+
+```{r pcoa functions}
+# Source and edited from package amplicon
+beta_pcoa2 = function (dis_mat, metadata, groupID = "Group", groupID2 = "Group2", ellipse = T, 
+    label = F, PCo = 12) 
+  {
+    p_list = c("ggplot2", "vegan", "ggrepel")
+    for (p in p_list) {
+        if (!requireNamespace(p)) {
+            install.packages(p)
+        }
+        suppressWarnings(suppressMessages(library(p, character.only = T)))
+    }
+    idx = rownames(metadata) %in% rownames(dis_mat)
+    metadata = metadata[idx, , drop = F]
+    dis_mat = dis_mat[rownames(metadata), rownames(metadata)]
+    sampFile = as.data.frame(metadata[, groupID], row.names = row.names(metadata))
+    sampFile2 = as.data.frame(metadata[, groupID2], row.names = row.names(metadata))
+    pcoa = cmdscale(dis_mat, k = 3, eig = T)
+    points = as.data.frame(pcoa$points)
+    eig = pcoa$eig
+    points = cbind(points, sampFile[rownames(points), ])
+    points = cbind(points, sampFile2[rownames(points), ])
+    colnames(points) = c("x", "y", "z", "group", "group2")
+    points$group2 = metadata$Group2
+    points$x = points$x
+    #points$y = -points$y
+    levels(as.factor(points$group))
+    points = points %>%
+        mutate(group = ordered(points$group,
+                         levels=c("NPC", "Control")
+                         ))
+    if (PCo == 12) {
+        p = ggplot(points, aes(x = x, y = y, color = group, shape = group2)) + #, shape = group2
+            labs(x = paste("PCo 1 (", format(100 * eig[1]/sum(eig), 
+                digits = 4), "%)", sep = ""), y = paste("PCo 2 (", 
+                format(100 * eig[2]/sum(eig), digits = 4), "%)", 
+                sep = ""), color = groupID)
+    }
+    if (PCo == 13) {
+        p = ggplot(points, aes(x = x, y = z, color = group, shape = group2)) + 
+            labs(x = paste("PCo 1 (", format(100 * eig[1]/sum(eig), 
+                digits = 4), "%)", sep = ""), y = paste("PCo 3 (", 
+                format(100 * eig[2]/sum(eig), digits = 4), "%)", 
+                sep = ""), color = groupID)
+    }
+    if (PCo == 23) {
+        p = ggplot(points, aes(x = y, y = z, color = group, shape = group2)) + 
+            labs(x = paste("PCo 2 (", format(100 * eig[1]/sum(eig), 
+                digits = 4), "%)", sep = ""), y = paste("PCo 3 (", 
+                format(100 * eig[2]/sum(eig), digits = 4), "%)", 
+                sep = ""), color = groupID)
+    }
+    p = p + geom_point(alpha = 0.7, size = 0.6) + theme_classic() + 
+        theme(text = element_text(family = "sans", size = 7)
+              )+
+      scale_fill_manual(values = c("#a60026","#74add1"))+
+      scale_color_manual(values = c("#a60026","#74add1"))+
+      scale_shape_manual(values = c(19, 19))#+
+      coord_fixed(ratio = 1)
+    if (ellipse == T) {
+        p = p + stat_ellipse(data = filter(points, group == "NPC"), aes(group = group), level = 0.78, size = 0.4)+
+          stat_ellipse(data = filter(points, group == "Control"), aes(group = group), level = 0.78, size = 0.4)+
+          theme(text = element_text(family = "sans", size = 7))+theme(legend.position="none",
+    legend.text = element_text(size=10),
+    legend.title = element_blank(),
+    axis.text.y = element_text(size=10, colour="black", family = "sans", angle = 0),
+    axis.text.x = element_text(size=10, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=10)
+    )+
+    theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+    theme(axis.line = element_line(size = 0.2, colour = "black"))
+    }
+    if (label == T) {
+        p = p + geom_text_repel(label = paste(rownames(points)),
+            colour = "black", size = 2)
+    }
+    p
+}
+```
+
+
+### Species β diversity
+ 
+```{r Species PCoA}
+
+# species
+distance_mat = level_distance
+
+metadata2 = t(metadata)
+distance_mat2 = distance_mat[rownames(distance_mat) %in% rownames(metadata), ]
+distance_mat3 = distance_mat2[, colnames(distance_mat2) %in% colnames(metadata2)]
+distance_mat = distance_mat3
+
+rows01 = rownames(metadata)
+distance_mat2 = distance_mat[rows01, ]
+distance_mat2 = t(distance_mat2)
+distance_mat3 = distance_mat2[rows01, ]
+distance_mat = t(distance_mat3)
+
+# Plotting Constrained PCoA based on distance matrix
+level_distance <- distance_mat
+pcoa = cmdscale (level_distance,eig=TRUE,k =3)
+level.pcoa = pcoa$points[,c(1,2)]
+colnames(level.pcoa)=c('PC1','PC2')
+pc = round(pcoa$eig/sum(pcoa$eig)*100,digits=2)
+level.pcoa = as.data.frame(level.pcoa)
+level.pcoa$Sample_ID = row.names(level.pcoa)
+level.pcoa = merge(metadata,level.pcoa,by='Sample_ID')
+colnames(level.pcoa)[3] = 'Group2'
+level.pcoa$Group2 = factor(level.pcoa$Group2,levels = c('Control','NPC'))
+
+# Differential test
+#adonis function used fot PCoA
+level.adonis = adonis2(level_distance~level.pcoa[,3],data=level.pcoa[,c(13,14)],distance = "bray",permutations = 999)
+level.adonis
+
+(p_beta_s = beta_pcoa2(distance_mat, metadata, groupID = "Group2",groupID2 = "Group2", ellipse = T))
+p_beta_s = p_beta_s + annotate(geom = "text", x = -0.41, y = 0.55, label = "P = 0.001", hjust = "left", size = 3)+ 
+  ggtitle("Species")+theme(plot.title = element_text(face="bold", size = 10))
+ggsave(paste("results/Figure_1C",".pdf", sep=""), p_beta_s, width=89 * 1.5, height=70 * 1.5, unit='mm')
+
+```
+
+
+
+## Stack plot and boxplot for the composition of gut microbiome of NPC and healthy controls
+
+```{r packages}
+# load package
+library (reshape2)
+library(ggplot2)
+library(ggprism)
+library(dplyr)
+library(plyr)
+library(magrittr)
+library(ggalluvial)
+library(tidyverse)
+library(tidyr)
+
+# load settings
+mytheme = theme_bw() + theme(text = element_text(family = "sans", size = 6))+
+  theme(#legend.position="none",
+    legend.text = element_text(size=12),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=12, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=12, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=12),
+    strip.text.x = element_text(size=12, angle = 0),
+    strip.text.y = element_text(size=12, angle = 0),
+    plot.title = element_text(size=12, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))
+```
+
+
+
+### Group average stackplot at Phylum level
+
+```{r Phylum}
+data_taxonomy <- read.table(file = "data/taxonomy.txt", sep = "\t", header = T, check.names = FALSE)
+data_taxonomy2 <- data_taxonomy %>% distinct(data_taxonomy$Species, .keep_all = TRUE)
+rownames(data_taxonomy2) <- data_taxonomy2$`data_taxonomy$Species`
+
+data_species <- read.table(file = "data/Metaphlan4_bacteria_species.txt", sep = "\t", header = T, check.names = FALSE)
+data_species <- aggregate(.~ Species, data = data_species, sum)
+rownames(data_species) = data_species$Species
+data_species2 <- merge(data_taxonomy2, data_species, by = "Species")
+
+data_phylum <- data_species2[, c(4, 12:790)]
+
+# sum of Phylum
+df3_p <- data_phylum
+design <- read.table(file = "data/group.txt", sep = "\t", header = T, row.names=1)
+data_p<-aggregate(.~ Phylum,data=df3_p,sum)
+rownames(data_p) = data_p$Phylum
+data_p = data_p[, -1]
+
+# Decreased sort by abundance
+mean_sort = data_p[(order(-rowSums(data_p))), ]
+mean_sort = as.data.frame(mean_sort)
+mean_sort2 = t(mean_sort)
+mean_sort2 = mean_sort2[order(-mean_sort2[,1]),]
+mean_sort3 = t(mean_sort2)
+mean_sort3 = apply(mean_sort3, 2, function(x) x/sum(x))
+mean_sort3 = as.data.frame(mean_sort3)
+
+# Filter Top 5, and other group into low abundance (relative abundance < 1%)
+other = colSums(mean_sort3[6:dim(mean_sort3)[1], ])
+mean_sort3 = mean_sort3[(6 - 1):1, ]
+mean_sort3 = rbind(other,mean_sort3)
+rownames(mean_sort3)[1] = c("others")
+mean_sort3 = as.data.frame(mean_sort3)
+
+# Stackplot for each sample
+sampFile = data.frame(sample = row.names(design), group = design$Group, row.names = row.names(design))
+mean_sort3$tax = rownames(mean_sort3)
+# Calculate average relative abundance for each group
+mat_t = t(mean_sort3)
+mat_t2 = merge(sampFile, mat_t, by = "row.names")
+mat_t2 = mat_t2[,c(-1,-2)]
+mat_t2 = as.data.frame(mat_t2)
+mat_t2$group = as.factor(mat_t2$group)
+mat_t3 = mat_t2[, -1]
+mat_t3 = mutate_all(mat_t3, as.numeric)
+mat_t3$group = mat_t2$group
+mat_t3 = as.data.frame(mat_t3)
+
+mat_mean2 = aggregate(.~group, data = mat_t3, FUN=function(x) mean(x))
+mat_mean_final = do.call(rbind, mat_mean2)[-1,]
+geno = mat_mean2$group
+colnames(mat_mean_final) = geno
+mean_sort=as.data.frame(mat_mean_final)
+
+# data collation
+mean_sort$tax = rownames(mean_sort)
+mean_sort4 = as.data.frame(mean_sort)
+mean_sort4$tax = mean_sort$tax
+data_all22 = as.data.frame(melt(mean_sort4, id.vars=c("tax")))
+data_all22 = data_all22[order(-data_all22$value), ]
+
+# Plot
+p_phylum01 = ggplot(data_all22, aes(x=factor(variable, levels = unique(variable)), y = value, fill = factor(tax, levels = unique(tax)),
+                           stratum = factor(tax, levels = unique(tax)), alluvium = factor(tax, levels = unique(tax)))) +
+  geom_bar(stat = "identity", position = "fill", width=0.2)+
+  scale_y_continuous(labels = scales::percent, expand = c(0,0)) +
+  coord_cartesian(ylim = c(0,1))+
+  xlab("")+
+  ylab("Percentage (%)")+ theme_classic()+
+  guides(fill=guide_legend(title="Phylum"))+
+  theme(legend.key.size = unit(0.4, "cm"))+
+  theme(text = element_text(family = "sans", size = 8))+
+  theme(#legend.position="none",
+    legend.text = element_text(size=12),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=12, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=12, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=12),
+    strip.text.x = element_text(size=12, angle = 0),
+    strip.text.y = element_text(size=12, angle = 0),
+    plot.title = element_text(size=12, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))+
+  scale_fill_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#35978b",
+                  "#e5acd7","#77aecd","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  scale_color_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#35978b",
+                  "#e5acd7","#77aecd","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  geom_col(width = 0.5, color=NA)
+ggsave(paste("results/Figure_1D",".pdf", sep=""), p_phylum01, width=79 * 1.5, height=69 * 1.5, unit='mm')
+p_phylum01
+```
+
+
+
+### Group average stackplot at Family level
+
+```{r Family, echo=FALSE}
+
+data_family <- data_species2[, c(7, 12:790)]
+# Family
+df3_f <- data_family
+design <- read.table(file = "data/group.txt", sep = "\t", header = T, row.names=1)
+# sum of Phylum
+data_f<-aggregate(.~ Family,data=df3_f,sum)
+rownames(data_f) = data_f$Family
+data_f = data_f[, -1]
+
+# Decreased sort by abundance
+mean_sort = data_f[(order(-rowSums(data_f))), ]
+mean_sort = as.data.frame(mean_sort)
+mean_sort2 = t(mean_sort)
+mean_sort2 = mean_sort2[order(-mean_sort2[,1]),]
+mean_sort3 = t(mean_sort2)
+mean_sort3 = apply(mean_sort3, 2, function(x) x/sum(x))
+mean_sort3 = as.data.frame(mean_sort3)
+
+# Filter Top 18, and other group into low abundance (<1%)
+other = colSums(mean_sort3[19:dim(mean_sort3)[1], ])
+mean_sort3 = mean_sort3[(19 - 1):1, ]
+mean_sort3 = rbind(other,mean_sort3)
+rownames(mean_sort3)[1] = c("others")
+mean_sort3 = as.data.frame(mean_sort3)
+
+# Stackplot for each sample
+sampFile = data.frame(sample = row.names(design), group = design$Group, row.names = row.names(design))
+mean_sort3$tax = rownames(mean_sort3)
+# Calculate average relative abundance for each group
+mat_t = t(mean_sort3)
+mat_t2 = merge(sampFile, mat_t, by = "row.names")
+mat_t2 = mat_t2[,c(-1,-2)]
+mat_t2 = as.data.frame(mat_t2)
+mat_t2$group = as.factor(mat_t2$group)
+mat_t3 = mat_t2[, -1]
+mat_t3 = mutate_all(mat_t3, as.numeric)
+mat_t3$group = mat_t2$group
+mat_t3 = as.data.frame(mat_t3)
+
+mat_mean2 = aggregate(.~group, data = mat_t3, FUN=function(x) mean(x))
+mat_mean_final = do.call(rbind, mat_mean2)[-1,]
+geno = mat_mean2$group
+colnames(mat_mean_final) = geno
+mean_sort=as.data.frame(mat_mean_final)
+
+# Data colation
+mean_sort$tax = rownames(mean_sort)
+mean_sort4 = as.data.frame(mean_sort)
+mean_sort4$tax = mean_sort$tax
+data_all22 = as.data.frame(melt(mean_sort4, id.vars=c("tax")))
+data_all22$group = data_all22$variable
+data_all22 = data_all22[order(-data_all22$value), ]
+data_all22 <- data_all22[c(1:5,7:8, 10:38, 6, 9), ]
+data_all22 <- data_all22[order(data_all22$group), ]
+
+# Plot
+p_family01 = ggplot(data_all22, aes(x=factor(variable, levels = unique(variable)), y = value, fill = factor(tax, levels = unique(tax))
+                           )) +
+  geom_bar(stat = "identity", position = "fill", width=0.2)+
+  scale_y_continuous(labels = scales::percent, expand = c(0,0)) +
+  coord_cartesian(ylim = c(0,1))+
+  xlab("")+
+  ylab("Percentage (%)")+ theme_classic()+
+  guides(fill=guide_legend(title="Family"))+
+  theme(legend.key.size = unit(0.4, "cm"))+
+  theme(text = element_text(family = "sans", size = 8))+
+  theme(#legend.position="none",
+    legend.text = element_text(size=12),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=12, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=12, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=12),
+    strip.text.x = element_text(size=12, angle = 0),
+    strip.text.y = element_text(size=12, angle = 0),
+    plot.title = element_text(size=12, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))+
+  scale_fill_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#35978b",
+                  "#e5acd7","#77aecd","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  scale_color_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#35978b",
+                  "#e5acd7","#77aecd","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  geom_col(width = 0.5, color=NA)
+ggsave(paste("results/Figure_1E",".pdf", sep=""), p_family01, width=79 * 1.5, height=69 * 1.5, unit='mm')
+p_family01
+```
+
+
+## Confounders analysis
+
+```{r}
+# Installing R packages based on CRAN and installing them if they are not detected
+p_list = c("ggplot2", "vegan", "ggforce", "plyr", "microeco", "tidyverse",
+           "ape","phyloseq","GUniFrac","reshape2" )
+for(p in p_list){if (!requireNamespace(p)){install.packages(p)}
+    library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)}
+
+# Loading R packages
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(vegan)))
+suppressWarnings(suppressMessages(library(ggforce)))
+suppressWarnings(suppressMessages(library(plyr)))
+suppressWarnings(suppressMessages(library(microeco)))
+suppressWarnings(suppressMessages(library(tidyverse)))
+suppressWarnings(suppressMessages(library(ape)))
+suppressWarnings(suppressMessages(library(phyloseq)))
+suppressWarnings(suppressMessages(library(GUniFrac)))
+suppressWarnings(suppressMessages(library(reshape2)))
+
+# Bray-Curtis
+# Load data
+otu_table_16S <- read.table(paste("data/Metaphlan4_bacteria_species.txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+
+# Calculate Bray-Curtis distance
+distance_bray <- vegdist(t(otu_table_16S), method="bray",diag=T, upper=T)
+class(distance_bray)
+
+# As matrix
+distance_bray_matrix <- as.matrix(distance_bray)
+dim(distance_bray_matrix)
+
+# As dataframe
+distance_bray_frame <- as.data.frame(distance_bray_matrix)
+dim(distance_bray_frame)
+
+# Save
+write.table(distance_bray_frame,"data/bray_curtis_distance_species.txt",sep = "\t")
+
+# Load metadata and distance matrix
+sub_design = read.table("data/group.txt", header=T, row.names=1, sep="\t")
+
+# distance matrix
+m = "data/bray_curtis_distance_species"
+
+beta = read.table(paste(m,".txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+idx = rownames(sub_design) %in% rownames(beta)
+sub_design = sub_design[idx,]
+sub_beta = beta[rownames(sub_design),rownames(sub_design)]
+
+# PerMANOVA
+dis = read.table(paste(m,".txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+idx = rownames(sub_design) %in% rownames(dis)
+sub_design = sub_design[idx,]
+sub_dis = dis[rownames(sub_design),rownames(sub_design)]
+dis1 <- as.dist(sub_dis)
+
+# anonis
+adonis_result <- (adonis2(dis1~Case_status+Sex+Age+Region+smoke+drink+BMI, sub_design, permutations = 999))
+adonis_result
+
+# Plot data
+data<-read.table("data/variance_explained_npc_species.txt",sep = "\t",header = TRUE)
+data = data[order(-data[,2]),]
+
+# Plot
+p2 <- ggplot(data, aes(kindom, r2, fill=confounders))+
+  scale_fill_manual(values=c("#9c3d62",
+                             "#945893",
+                             "#7a76b7",
+                             "#fddbc7",
+                             "#f7f7f7",
+                             "#befcff",
+                             "#5ebcc2",
+                             "#46a9cb",
+                             "#005c72"))+
+  geom_bar(stat="identity",position = "stack",width=0.7)+
+  guides(fill=guide_legend(reverse=F))+
+  scale_y_continuous(expand=c(0,0))+theme_bw()+labs(x="", y="Beta-diversity variance explained (R2)")+
+  theme(panel.grid=element_blank())+
+  theme_classic()+
+  theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"))
+ggsave("results/Figure_1F.pdf", width = 8, height = 10, units = "cm")
+```
+
+
+
+## Species difference analysis using MaAsLin2
+
+```{r}
+#### LOAD REQUIRED R PACKAGES ####
+suppress <- function(x){invisible(capture.output(suppressMessages(suppressWarnings(x))))}
+
+suppress(library(dplyr))
+suppress(library(reshape2))
+suppress(library(readxl))
+suppress(library(phyloseq))
+suppress(library(tibble))
+suppress(library(openxlsx))
+suppress(library(foreach))
+suppress(library(data.table))
+suppress(library(gridExtra))
+suppress(library(scales))
+suppress(library(ggplot2))
+suppress(library(ggh4x))
+suppress(library(ggfortify))
+suppress(library(ggvenn))
+suppress(library(ggrepel))
+suppress(library(vegan))
+suppress(library(pairwiseCI))
+suppress(library(vcd))
+suppress(library(ANCOMBC))
+suppress(library(Maaslin2))
+suppress(library(igraph))
+```
+
+
+## Species difference analysis
+
+```{r}
+#### PREPARE RELATIVE ABUNDANCE AND COUNT DATA ####
+metadata <- data.frame(read_xlsx('data/maaslin2_data.xlsx', sheet='subject_metadata'))
+rownames(metadata) <- metadata$sample_name
+
+# EBV DNA < 4000
+# metadata3 <- read.table(file = "data/group_less4000.txt", sep = "\t", header = T, row.names=1)
+# metadata <- metadata[rownames(metadata)%in%rownames(metadata3), ]
+
+# EBV DNA >= 4000
+# metadata4 <- read.table(file = "data/group_more4000.txt", sep = "\t", header = T, row.names=1)
+# metadata <- metadata[rownames(metadata)%in%rownames(metadata4), ]
+
+# read in tables that were previously generated by taxonomic profiling
+ra <- data.frame(read_xlsx('data/maaslin2_data.xlsx', sheet='metaphlan_rel_ab'))
+
+ra <- ra[,c('clade_name',metadata$sample_name)]
+
+# make table sample x feature
+rownames(ra) <- ra$clade_name
+ra <- data.frame(t(ra[,-1]), check.names=FALSE)
+
+# compile relative abundance data into phyloseq objects for species
+ra.sub <- ra
+ra.ps.s <- phyloseq(otu_table(as.matrix(ra.sub), taxa_are_rows=FALSE),
+                      sample_data(metadata),
+                      tax_table(as.matrix(
+                      data.frame(clade_name = colnames(ra.sub),
+                                 check.names=FALSE, row.names=colnames(ra.sub)))))
+
+#### SPECIES AND GENUS MWAS ####
+sample_data(ra.ps.s)$Case_status <- dplyr::recode(sample_data(ra.ps.s)$Case_status, 
+                                                          `NPC`=1, Control=2)
+sample_data(ra.ps.s)$Sex <- dplyr::recode(sample_data(ra.ps.s)$Sex,
+                                                        `F`=1, M=2)
+sample_data(ra.ps.s)$Age <- dplyr::recode(sample_data(ra.ps.s)$Age,
+                                                        `young`=1, old=2)
+sample_data(ra.ps.s)$smoke <- dplyr::recode(sample_data(ra.ps.s)$smoke,
+                                                        `smoke`=1, No_smoke=2)
+sample_data(ra.ps.s)$drink <- dplyr::recode(sample_data(ra.ps.s)$drink,
+                                                        `drink`=1, No_drink=2)
+sample_data(ra.ps.s)$Region <- dplyr::recode(sample_data(ra.ps.s)$Region,
+                                                        `Guangdong`=1, Other=2)
+sample_data(ra.ps.s)$BMI <- dplyr::recode(sample_data(ra.ps.s)$BMI,
+                                                        `less25`=1, more25=2)
+
+```
+
+
+
+
+MaAsLin2
+
+```{r}
+
+# lm.s.npc
+library(phyloseq)
+library(Maaslin2)
+ci <- function(coef, se){
+  lower.ci <- coef - 1.96*se
+  upper.ci <- coef + 1.96*se
+  return(c(lower.ci=lower.ci,upper.ci=upper.ci))
+}
+
+#ps = phyloseq(otu_table(ra.ps.s)/100, sample_data(ra.ps.s))
+ps = phyloseq(otu_table(ra.ps.s), sample_data(ra.ps.s))
+# run MaAsLin2
+input_data <- data.frame(otu_table(ps))
+library(sampling)
+sam_data = as.data.frame(sample_data(ps))
+common_columns = colnames(sam_data)[colnames(sam_data) %in% colnames(metadata)]
+input_metadata <- data.frame(sam_data[, common_columns])
+capt<- capture.output(fits <- suppressWarnings(Maaslin2(input_data, input_metadata, 
+                 output='temp_directory', 
+                 min_prevalence=0.05, 
+                #min_variance,
+                normalization='NONE', 
+                #normalization='CLR',
+                #normalization= 'TSS',
+                #transform='LOG',
+                transform = "NONE",
+                correction = "BH",
+                analysis_method='LM',
+                max_significance=0.05,
+                fixed_effects = c('Case_status','Sex','Age','smoke','drink','Region','BMI'),
+                random_effects = "batch2",
+                #standardize=FALSE,
+                #standardize=TRUE,
+                standardize=FALSE,
+                plot_heatmap=TRUE, 
+                plot_scatter=TRUE
+                )))
+
+# put back original feature names
+for (feat in seq_along(fits$results$feature)){
+  fits$results$feature[feat] <- taxa_names(ps)[make.names(taxa_names(ps)) == 
+                                              fits$results$feature[feat]]
+}
+
+input_metadata = input_metadata[!is.na(input_metadata$Case_status),]
+input_metadata = input_metadata[!is.na(input_metadata$Sex),]
+input_metadata = input_metadata[!is.na(input_metadata$Age),]
+input_metadata = input_metadata[!is.na(input_metadata$smoke),]
+input_metadata = input_metadata[!is.na(input_metadata$drink),]
+input_metadata = input_metadata[!is.na(input_metadata$BMI),]
+
+ps = phyloseq(otu_table(ps),sample_data(ra.ps.s))
+sample_data(ps) = data.frame(sample_data(ps))
+
+res <- data.frame()
+for (var in seq_along(unique(fits$results$metadata))){
+    # get variable name
+    var.name <- unique(fits$results$metadata)[var]
+    if (length(table(sample_data(ps)[,var.name])) == 2){
+      group.1.index <- sample_data(ps)[,var.name] == 
+                       names(table(sample_data(ps)[,var.name]))[2]
+      group.1.index[is.na(group.1.index)] <- FALSE
+      group.2.index <- sample_data(ps)[,var.name] == 
+                       names(table(sample_data(ps)[,var.name]))[1]
+      group.2.index[is.na(group.2.index)] <- FALSE
+      n1 <- colSums(otu_table(ps)[group.1.index,] > 0)
+      n2 <- colSums(otu_table(ps)[group.2.index,] > 0)
+      mean1 <- colMeans(otu_table(ps)[group.1.index,])
+      mean2 <- colMeans(otu_table(ps)[group.2.index,])
+    }else{
+      n1 <- rep(sum(table(sample_data(ps)[,var.name])), ntaxa(ps))
+      names(n1) <- taxa_names(ps)
+      n2 <- rep(NA, ntaxa(ps))
+      names(n2) <- taxa_names(ps)
+      mean1 <- colMeans(otu_table(ps))
+      mean2 <- rep(NA, ntaxa(ps))
+      names(mean2) <- taxa_names(ps)
+    }
+    # calculate fold change and confidence interval of fold change
+    if(length(table(sample_data(ps)[,var.name])) == 2){
+      FC <- 2^(fits$results$coef[fits$results$metadata == var.name])
+      FC.lower <- c()
+      FC.upper <- c()
+      for (coef in seq_along(fits$results$coef[fits$results$metadata == var.name])){
+        FC.lower <- c(FC.lower, 2^(ci(fits$results$coef[fits$results$metadata == 
+                                                        var.name][coef],
+                                      fits$results$stderr[fits$results$metadata == 
+                                                          var.name][coef])['lower.ci']))
+        FC.upper <- c(FC.upper, 2^(ci(fits$results$coef[fits$results$metadata == 
+                                                        var.name][coef],
+                                      fits$results$stderr[fits$results$metadata ==
+                                                          var.name][coef])['upper.ci']))
+      }
+    }else{
+      FC <- NA
+      FC.lower <- NA
+      FC.upper <- NA
+    }
+# summarize results for variable
+    correction = "BH"
+    rvar <- data.frame(Variable=var.name,
+                      Feature=fits$results$feature[fits$results$metadata == var.name],
+                      N1=n1[fits$results$feature[fits$results$metadata == var.name]],
+                      N2=n2[fits$results$feature[fits$results$metadata == var.name]],
+                      Mean1=mean1[fits$results$feature[fits$results$metadata == var.name]],
+                      Mean2=mean2[fits$results$feature[fits$results$metadata == var.name]],
+                      Beta=fits$results$coef[fits$results$metadata == var.name],
+                      SE=fits$results$stderr[fits$results$metadata == var.name],
+                      P=fits$results$pval[fits$results$metadata == var.name],
+                      FDR=p.adjust(fits$results$pval[fits$results$metadata == var.name], 
+                                   method=correction),
+                      FC=FC, FC_lower=FC.lower, FC_upper=FC.upper,
+                      check.names=FALSE)
+    res <- rbind(res, rvar[order(rvar$P),])
+    # add untested features if they exist
+    if (nrow(rvar) != ntaxa(ps)){
+      res <- rbind(res,
+             data.frame(Variable=var.name,
+                        Feature=taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])],
+                        N1=n1[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        N2=n2[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Mean1=mean1[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Mean2=mean2[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Beta=NA, SE=NA, P=NA, FDR=NA, FC=NA, FC_lower=NA, FC_upper=NA,
+                        check.names=FALSE)
+                   )
+    }
+}
+lm.s.npc = list(result.summary=res, Maaslin2.output=fits)
+write.csv(lm.s.npc[["result.summary"]], 'results/NPC_MaAsLin2_plot_data_clade_name_species_difference.csv')
+
+
+#### Enriched or Depleted ####
+# get data ready for plotting
+plot.data <- lm.s.npc$result.summary[lm.s.npc$result.summary$Variable == 'Group',
+                                       c('Feature','FDR','FC')]
+plot.data <- plot.data[rowSums(is.na(plot.data)) == 0,]
+
+plot.data$`NPC association` <- ifelse(plot.data[,2] < 0.05,
+                                     ifelse(plot.data[,3] > 1, 'depleted',
+                                            ifelse(plot.data[,3] < 1, 
+                                                    'enriched','opposite directions')),
+                                     'not associated')
+write.csv(plot.data, 'results/NPC_MaAsLin2_plot_data_clade_name_species_difference2.csv')
+```
+
+
+
+Use valcano plots to show concordance Pathways with MaAsLin2 and ANCOM-BC
+
+Species
+
+```{r valcano plot}
+library(magrittr)
+library(dplyr)
+#devtools::install_github("BioSenior/ggvolcano", force = TRUE)
+library(ggVolcano)
+
+# load data
+data_vol <-read.table("data/data_vol_associated.txt",header=T,sep="\t",row.names=1)
+data_vol = as.data.frame(data_vol)
+
+data_vol2 <- data_vol
+data_vol2$padj2 <- -log10(data_vol2$FDR_maaslin)
+
+#logFC = 0.5
+#P.Value = 0.05
+library(ggplot2)
+p_volcano1 <- ggplot(data = data_vol2, aes(x = Beta, y = padj2)) +
+  geom_point(alpha = 0.4, size = 2.0, aes(color = NPC_association)) + 
+  ylab("-log10(Pvalue)") +
+  scale_color_manual(values = c("#74add1","#a60026", "grey")) + 
+  geom_vline(xintercept = 0, lty = 4, col = "black", lwd = 0.4) + 
+  geom_hline(yintercept = -log10(0.05), lty = 4, col = "black", lwd = 0.4) + 
+  labs(x = "Coef. (by MaAsLin2)", y= bquote(atop(-Log[10]~italic(FDR))))+
+  theme_bw()
+
+# add labels
+library(dplyr)
+# select top 5 enriched species
+up_data1 <- filter(data_vol2, data_vol2$NPC_association == "Enriched")
+up_data2 <- arrange(up_data1, desc(up_data1$padj2))
+up_data_5 <- up_data2[1:5, ] 
+  
+# select top 25 depleted species
+down_data1 <- filter(data_vol2, data_vol2$NPC_association == "Depleted")
+down_data2 <- arrange(down_data1, desc(down_data1$padj2))
+down_data_25 <- down_data2[1:10, ] 
+
+# using geom_text_repel() to add labels
+library(ggrepel)
+p_volcano2 <- p_volcano1 +  
+  geom_text_repel(data = up_data_5, aes(x = Beta, 
+                                        y = padj2, 
+                                        label = up_data_5$row), size = 2, max.overlaps = 20) + 
+  geom_text_repel(data = down_data_25, aes(x = Beta, 
+                                           y = padj2, 
+                                           label = down_data_25$row), size = 2, max.overlaps = 20)+  
+  theme(legend.position = c(0.84, 0.85),panel.grid = element_blank())
+ggsave(paste("results/Figure_1G",".pdf", sep=""), 
+       p_volcano2, width=59 * 1.5, height=50 * 1.5, unit='mm')
+p_volcano2
+```
+
+

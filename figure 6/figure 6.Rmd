@@ -1,0 +1,386 @@
+---
+title: "Fig. 6. Analysis of TME and PMS."
+author: "Baidefeng, Lankaiqi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Figure 6B-C
+
+```{r}
+#package
+library(openxlsx)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+library(scales)
+
+########################patient characteristics##############################
+mydata <- read.xlsx("data/RNA_squencing_data.xlsx")
+mydata$Age <- as.factor(ifelse(mydata$Age>=45,"≥45","<45"))
+mydata$Sex <- factor(mydata$Sex,levels = c(1,2),labels = c("Male","Female"))
+mydata$Smoking <- ifelse(mydata$Smoke=="0","No","Yes")
+mydata$Acohol <- ifelse(mydata$Drink=="0","No","Yes")
+mydata$T_stage <- factor(ifelse(mydata$T_stage %in%c("1","2"),"1-2","3-4"))
+mydata$N_stage <- factor(ifelse(mydata$N_stage %in%c("0","1"),"0-1","2-3"))
+mydata$EBV_DNA <- ifelse(mydata$Before_treat_EBV.DNA>=4000,"≥4000","<4000")
+mydata$BMI <- ifelse(mydata$BMI>=25,"≥25","<25")
+###Table S12
+library(compareGroups)
+table1 <- descrTable(PMS~Age+Sex+Smoking+Acohol+BMI+EBV_DNA+TNM+T_stage+N_stage,
+                     show.all = T,
+                     show.p.ratio =T,
+                     show.ratio = T,
+                     data = mydata)
+table1
+
+####################################IOBR#####################################
+# if (!requireNamespace("IOBR", quietly = TRUE))
+#   devtools::install_github("IOBR/IOBR")
+# If IOBR install failed, please download the packages and install
+library(IOBR)
+library(tidyHeatmap)
+# if (!require("BiocManager"))
+#   install.packages("BiocManager")
+# BiocManager::install("maftools")
+library(maftools)
+library(survival)
+
+exprset1 <- read.table("data/RNA_sequcing_gene_counts.tsv",header = TRUE) 
+rownames(exprset1) <- NULL
+expr <- exprset1%>% column_to_rownames("gene_name")
+###count-TPM
+eset_stad <- log2(expr+1)
+eset_stad <- eset_stad[apply(eset_stad,1,sd)>0.5,]
+###IOBR_MCP
+mcpcounter<-deconvo_tme(eset = eset_stad, method = "mcpcounter", arrays = FALSE, perm = 200 )
+###IOBR_TME signature
+eset_stad1 <- as.matrix(eset_stad)
+
+sig_tme<-calculate_sig_score(pdata           = NULL,
+                             eset            = eset_stad1,
+                             signature       = signature_tme,
+                             method          = "ssgsea",
+                             mini_gene_count = 2)
+
+
+######################Immune Infiltration Analysis###########################
+##### Figure S8A #####
+datax <- inner_join(mydata,mcpcounter,by=c("pre_name"="ID"))
+table(datax$PMS)
+colnames(datax)
+mydata<-datax[c(15,24:33)] %>%
+  gather(key = "ImmuneCell",
+         value = "MCP",
+         -c(PMS))
+mydata <- arrange(mydata,ImmuneCell,PMS)
+mydata$ImmuneCell <- as.factor(mydata$ImmuneCell)
+mydata$PMS <- as.factor(mydata$PMS)
+stat.test <- mydata %>% 
+  group_by(ImmuneCell) %>% 
+  wilcox_test(MCP ~ PMS) %>% 
+  add_significance("p") %>% 
+  arrange("ImmuneCell") %>% 
+  add_xy_position(x="ImmuneCell") 
+stat.test$p <- pvalue(stat.test$p)
+p1 <- ggboxplot(mydata, x="ImmuneCell", y = "MCP",
+                color = "PMS",
+                palette=c("#a60026","#74add1"),
+                add = "jitter",
+                add.params = list(alpha = 0.5,size=3))+
+  stat_pvalue_manual(stat.test,
+                     label = "p",
+                     y.position = 10,
+                     hide.ns = F,
+                     tip.length = 0.01)+
+  theme(axis.text.x = element_text(angle = 30,hjust = 1,size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 16));p1
+ggsave(p1,filename = "results/Figure_S8A.pdf",width = 10,height = 6)
+
+######Figure S8B #####
+names(datax)[17:18] <- c("CD4 T cell", "CD8 T cell")
+mydata<-datax[c(15,17:18)] %>%
+  gather(key = "ImmuneCell",
+         value = "T_cell",
+         -c(PMS))
+mydata <- arrange(mydata,ImmuneCell,PMS)
+mydata$ImmuneCell <- as.factor(mydata$ImmuneCell)
+mydata$PMS <- as.factor(mydata$PMS)
+stat.test <- mydata %>% 
+  group_by(ImmuneCell) %>% 
+  wilcox_test(T_cell ~ PMS) %>% 
+  add_significance("p") %>% 
+  arrange("ImmuneCell") %>% 
+  add_xy_position(x="ImmuneCell") 
+stat.test$p <- round(stat.test$p,3)
+p2 <- ggboxplot(mydata, x="ImmuneCell", y = "T_cell",
+                color = "PMS",
+                palette=c("#a60026","#74add1"),
+                add = "jitter",
+                add.params = list(alpha = 0.5,size=3))+
+  stat_pvalue_manual(stat.test,
+                     label = "p",
+                     y.position = 15,
+                     hide.ns = F,
+                     tip.length = 0.01)+
+  theme(axis.text.x = element_text(angle =0,hjust = 1,size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14));p2
+ggsave(p2,filename = "results/Figure_S8B.pdf",width = 3,height = 5)
+
+################################Figure 6B##########################
+table(datax$PMS_EBV)
+colnames(datax)
+mydata<-datax[c(16,24:33)] %>%
+  gather(key = "ImmuneCell",
+         value = "MCP",
+         -c(PMS_EBV))
+mydata <- arrange(mydata,ImmuneCell,PMS_EBV)
+mydata$ImmuneCell <- as.factor(mydata$ImmuneCell)
+mydata$PMS_EBV <- as.factor(mydata$PMS_EBV)
+stat.test <- mydata %>% 
+  group_by(ImmuneCell) %>% 
+  wilcox_test(MCP ~ PMS_EBV) %>% 
+  add_significance("p") %>% 
+  arrange("ImmuneCell") %>% 
+  add_xy_position(x="ImmuneCell") 
+stat.test$p <- pvalue(stat.test$p)
+p3 <- ggboxplot(mydata, x="ImmuneCell", y = "MCP",
+                color = "PMS_EBV",
+                palette=c("#a60026","#74add1"),
+                add = "jitter",
+                add.params = list(alpha = 0.5,size=3))+
+  stat_pvalue_manual(stat.test,
+                     label = "p",
+                     y.position = 10,
+                     hide.ns = F,
+                     tip.length = 0.01)+
+  theme(axis.text.x = element_text(angle = 30,hjust = 1,size = 16),
+        axis.text.y = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 16));p3
+ggsave(p3,filename = "results/Figure 6B.pdf",width = 10,height = 5)
+
+#######Figure 6C ######
+names(datax)[17:18] <- c("CD4 T cell", "CD8 T cell")
+mydata<-datax[c(16,17:18)] %>%
+  gather(key = "ImmuneCell",
+         value = "T_cell",
+         -c(PMS_EBV))
+mydata <- arrange(mydata,ImmuneCell,PMS_EBV)
+mydata$ImmuneCell <- as.factor(mydata$ImmuneCell)
+mydata$PMS_EBV <- as.factor(mydata$PMS_EBV)
+stat.test <- mydata %>% 
+  group_by(ImmuneCell) %>% 
+  wilcox_test(T_cell ~ PMS_EBV) %>% 
+  add_significance("p") %>% 
+  arrange("ImmuneCell") %>% 
+  add_xy_position(x="ImmuneCell") 
+stat.test$p <- round(stat.test$p,3)
+p4 <- ggboxplot(mydata, x="ImmuneCell", y = "T_cell",
+                color = "PMS_EBV",
+                palette=c("#a60026","#74add1"),
+                add = "jitter",
+                add.params = list(alpha = 0.5,size=3)
+)+
+  stat_pvalue_manual(stat.test,
+                     label = "p",
+                     y.position = 15,
+                     hide.ns = F,
+                     tip.length = 0.01)+
+  theme(axis.text.x = element_text(angle =30,hjust = 1,size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14));p4
+ggsave(p4,filename = "results/Figure 6C.pdf",width = 5,height = 5)
+
+```
+
+
+
+Figure 6E
+
+```{r}
+########Figure 6E######
+library(pheatmap)
+data_i <- inner_join(datax[,c(2,16)],sig_tme,by=c("pre_name"="ID"))
+{
+  data_i[,3:168] <- lapply(data_i[,3:168],as.numeric)
+  choose_matrix <- data_i[,c(1,3:168)] %>% column_to_rownames("pre_name")
+  choose_matrix=t(scale(choose_matrix))
+  an <-data_i[,c("pre_name","PMS_EBV")] %>% column_to_rownames("pre_name")
+  choose_matrix <- choose_matrix[,match(rownames(an),colnames(choose_matrix))] 
+}
+
+an <- as.data.frame(an)
+an$name <- rownames(an)
+an <- an[order(an$PMS_EBV),]
+rownames(an) = an$name
+an2 = an[, -2]
+an2 = as.data.frame(an2)
+rownames(an2) <- an$name
+
+library(ComplexHeatmap)
+annotation_col = an2
+group = annotation_col
+colnames(group) <- "Group"
+topanno=HeatmapAnnotation(df=group,
+                          border = F,
+                          show_annotation_name = F,
+                          col = list(Group=c('high'='#48D1CC',
+                                            'low'='#FA8072')),
+                         gp =gpar(lwd = 0.0),
+                         height = unit(0.01, "mm"),
+                         annotation_height = unit(0.02, "mm"),
+                         annotation_width = unit(0.02, "mm"),
+                         simple_anno_size = unit(3.0, "mm"),
+                         annotation_name_gp = gpar(fontsize = 10),
+                         annotation_legend_param = list(title_gp = gpar(fontsize = 12),
+                                                              labels_gp = gpar(fontsize = 12)),
+                         annotation_label = unit(3.0, "mm"),
+                         annotation_name_offset = unit(2.0, "mm"),
+                         show_legend = T)
+
+df <- read.table(file = "data/group_row.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(df) <- df$TME
+df2 = df[, -1]
+df2 = as.data.frame(df2)
+rownames(df2) <- df$TME
+colnames(df2) <- "Group"
+leftanno = rowAnnotation(df=df2,
+                          col = list(Group=c('immune signature'='#95b1af',
+                                            'cytokines'='#5ec2bf',
+                                            'tumor signature'='#e89eb3',
+                                            'others'='#f8f2cb'
+                                            )),
+                         show_legend = T)
+
+
+bk=unique(c(seq(-1,1, length=100)))
+
+p = Heatmap(choose_matrix, #row_names_side = "right", 
+            cluster_rows = FALSE, 
+            cluster_columns = FALSE, 
+            row_names_gp = gpar(fontsize = 8),
+            col = colorRampPalette(c("#74add1","white","#a60026"))(120),
+            show_column_names = FALSE,
+            show_row_names = FALSE,
+            #show_row_names = TRUE,
+            top_annotation = topanno,
+            left_annotation = leftanno,
+            column_split = group,
+            column_names_gp = gpar(fontsize = 0)
+            )
+p
+pdf("results/Figure 6E2.pdf", width = 8, height = 10)
+draw(p)
+dev.off()
+
+```
+
+
+
+Figure 6F
+
+```{r}
+############################4、pathway enrichment###############################
+exp_gp <- t(expr) %>% as.data.frame() %>% rownames_to_column("sample")
+GP_cln <- inner_join(datax[,c("pre_name","PMS_EBV")],exp_gp,by=c("pre_name"="sample"))
+expr2 <- GP_cln[,c(1,3:61619)] %>% column_to_rownames("pre_name")
+expr2 <- t(expr2) %>% as.data.frame()
+
+##### limma ######
+library(limma)
+library(edgeR)
+group_list <- GP_cln$PMS_EBV
+group_list <- factor(group_list,levels=c("low","high"))
+design <- model.matrix(~0+group_list);design
+colnames(design)=levels(group_list)
+{
+  rownames(design)=colnames(expr2)
+  dgelist <- DGEList(counts=expr2)
+  keep<- rowSums(cpm(dgelist) > 0.5 ) >= 2
+  dge <- dgelist[keep,,keep.lib.sizes=FALSE]
+  dge <- calcNormFactors(dge)
+  logCPM <- cpm(dge, log=TRUE, prior.count=3)
+  v <- voom(dge,design, normalize="quantile")
+  fit <- lmFit(v, design)
+  constrasts = paste(rev(levels(group_list)),collapse = "-")
+  cont.matrix <- makeContrasts(contrasts=constrasts,levels = design) 
+  fit2=contrasts.fit(fit,cont.matrix)
+  fit2=eBayes(fit2)
+}
+DEG = topTable(fit2, coef=constrasts, n=Inf)
+DEG = na.omit(DEG)
+logFC_cutoff <- 1
+DEG$change = as.factor(
+  ifelse(DEG$P.Value < 0.05 & abs(DEG$logFC) > logFC_cutoff,
+         ifelse(DEG$logFC > logFC_cutoff ,'UP','DOWN'),'NOT'))
+head(DEG)
+
+#####GSEA#####
+library(clusterProfiler)
+GSEA_input <- DEG$logFC
+names(GSEA_input) <- rownames(DEG) 
+GSEA_input<- sort(GSEA_input, decreasing = TRUE)
+geneset <- read.gmt("data/msigdb.v7.5.1.symbols.gmt")
+egmt <- GSEA(GSEA_input, pvalueCutoff = 1,TERM2GENE= geneset)
+egmt2 <- egmt@result 
+enrich <- egmt2 %>%
+  filter(abs(NES)>1,p.adjust <0.05,qvalue < 0.25) %>% 
+  arrange(qvalue)
+
+######Figure 6F#####
+data_bar <-subset(enrich,grepl("KEGG",Description))
+down_kegg<-data_bar[data_bar$NES < -1,];down_kegg$group=-1
+up_kegg<-data_bar[data_bar$NES > 1,];up_kegg$group=1
+dat=rbind(up_kegg,down_kegg)
+dat$ID <- str_split_fixed(dat$Description,"_",2)[,2] 
+dat$pathway <- str_to_lower(dat$ID, locale = "en")
+dat$pathway <- gsub("_"," ",dat$pathway)
+dat$p.adjust = -log10(dat$p.adjust)
+dat$p.adjust=dat$p.adjust*dat$group
+dat=dat[order(dat$p.adjust,decreasing = F),]
+g_kegg<- ggplot(dat, aes(x=reorder(pathway,order(p.adjust, decreasing = F)), y=p.adjust, fill=group)) +
+  geom_bar(stat="identity") +
+  scale_fill_gradient(low="#74add1",high="#FF9AA2",guide = FALSE) +
+  scale_x_discrete(name ="") +
+  scale_y_continuous(name ="log10P-value") +
+  coord_flip() + theme_bw(base_size = 15)+
+  theme(plot.title = element_text(hjust = 0.5),  axis.text.y = element_text(size = 15))+
+  ggtitle("KEGG pathway")
+g_kegg
+ggsave("results/Figure 6F.pdf",g_kegg,width = 15, height = 10)
+```
+
+

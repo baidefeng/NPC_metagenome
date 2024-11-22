@@ -1,0 +1,569 @@
+---
+title: "Fig. 5. Survival analysis of patients with NPC. "
+author: "Baidefeng, Lankaiqi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Lasso-cox analysis
+
+```{r lasso-cox}
+###package
+library(survival)
+library(survminer)
+library(openxlsx)
+library(tidyverse)
+library(data.table)
+library(scales)
+library(forestplot)
+library(ggplot2)
+library(ggpubr)
+###################################Data#########################################
+clndata <- read.xlsx("data/Survival_data_NPC.xlsx")
+clndata <- filter(clndata,NPC.biomarker=="yes")
+clndata$Age <- as.factor(ifelse(clndata$Age>=45,"≥45","<45"))
+clndata$Sex <- factor(clndata$Sex,levels = c(1,2),labels = c("Male","Female"))
+clndata$Sex <- relevel(clndata$Sex,"Female")
+
+exp1 <- read.csv("data/rf_model_species_used.csv") %>% column_to_rownames("X")
+exp1 <- t(exp1) %>% as.data.frame() %>% rownames_to_column("sample")
+data <- inner_join(clndata,exp1,by=c("SampleID"="sample"))
+
+################Multivariate Cox Analysis (Age+Sex+Species)###############
+fixed_formula <- "Age + Sex"
+variable_names <- colnames(data[,18:426])
+results <- data.frame(Variable = character(),
+                      Coefficient = numeric(),
+                      Std_Error = numeric(),
+                      Hazard.Ratio = numeric(),
+                      z_value = numeric(),
+                      p_value = numeric(),
+                      stringsAsFactors = FALSE)
+results1 <- data.frame(
+  Variable = character(),
+  CI95_up = numeric(),
+  CI95_down = numeric())
+# Multivariate Cox Analysis
+for (var in variable_names) {
+  formula <- as.formula(paste("Surv(OS, status) ~", fixed_formula, "+", var))
+  res.cox <- coxph(formula, data = data)
+  summary_res <- summary(res.cox)
+  coefficients <- summary_res$coefficients
+  for (i in 1:nrow(coefficients)) {
+    results <- rbind(results, data.frame(
+      Variable = rownames(coefficients)[i],
+      Coefficient = coefficients[i, "coef"],
+      Hazard.Ratio = coefficients[i, "exp(coef)"],
+      Std_Error = coefficients[i, "se(coef)"],
+      z_value = coefficients[i, "z"],
+      p_value = coefficients[i, "Pr(>|z|)"]
+    ))}
+# 95%CI
+  ci <- summary_res$conf.int
+  for (i in 1:nrow(ci)) {
+    results1 <- rbind(results1, data.frame(
+        Variable = rownames(ci)[i],
+        CI95_up =ci[i, "upper .95"],
+        CI95_down =ci[i, "lower .95"]
+    ))}
+}
+#####Figure S6#####
+ucox <-filter(results,Variable!="Age≥45")
+ucox <-filter(ucox,Variable!="SexMale")
+ucox1 <- filter(results1,Variable!="Age≥45")
+ucox1 <-filter(ucox1,Variable!="SexMale")
+
+data_u <- inner_join(ucox,ucox1,by=c("Variable"="Variable"))
+data_u$CI95_down <-sprintf("%.3f",data_u$CI95_down)
+data_u$CI95_up <- sprintf("%.3f",data_u$CI95_up)
+data_u$Hazard.Ratio <- sprintf("%.3f",data_u$Hazard.Ratio)
+data_u$p_value<- sprintf("%.3f",data_u$p_value)
+
+sample <- filter(data_u,p_value<0.05) %>% as.data.frame()
+colnames(sample)
+sample$Hazard.Ratio <- as.numeric(sample$Hazard.Ratio)
+sample$CI95_up <- as.numeric(sample$CI95_up)
+sample$CI95_down <- as.numeric(sample$CI95_down)
+#save(sample,file = "Multivariate_Cox_Analysis(age+Sex).rdata")
+forestplot(sample[,c(1,6)],
+           mean = sample[,'Hazard.Ratio'],
+           lower = sample[,"CI95_down"],
+           upper = sample[,"CI95_up"],
+           boxsize = 0.5,
+           graph.pos=2,
+           graphwidth = unit(0.4,"npc"),
+           fn.ci_norm="fpDrawDiamondCI",
+           col=fpColors(box="steelblue", lines="black", zero = "black"),
+           lwd.ci=2,ci.vertices.height = 0.1,ci.vertices=TRUE,
+           zero=1,
+           lwd.zero=2,
+           grid=T,
+           lwd.xaxis=2,
+           title="species  HR    P.value ",
+           xlab="",
+           clip=c(-Inf,2),
+           colgap = unit(0.5,"cm"))
+
+#################################LASSO-Cox###################################
+library(Matrix)
+library(glmnet) 
+colnames(data)
+data_t <- cbind(data[,1:17],data[,sample$Variable])
+x <- as.matrix(data_t[,c(18:48)])
+y <- data.matrix(Surv(data_t$OS,data_t$status))
+
+set.seed(123)
+cvfit <- cv.glmnet(x, y, family="cox", alpha = 1,nfolds = 10) 
+lasso_min <- cvfit$lambda.min;lasso_min
+lasso_best <- glmnet(x, y,family = "cox", alpha = 1,lambda = lasso_min)
+
+#####Figure S7A-B#####
+plot(cvfit) 
+plot(cvfit$glmnet.fit,"lambda",label = T) 
+
+#LASSO
+coef(lasso_best) 
+coef <- coef(lasso_best, s = lasso_best$lambda.min)
+index <- which(coef != 0)
+lasso_species <- coef@Dimnames[[1]][index]
+lasso_Coef <- coef[index]
+lassoSpecies <- c("OS","status",lasso_species)
+lassoSigExp <- data_t[,lassoSpecies]
+lassoSigExp <- cbind(id=row.names(lassoSigExp),lassoSigExp)
+lassoSigExp <- lassoSigExp[,-1]
+
+#model construction
+multiCox <- coxph(Surv(OS, status) ~ ., data = lassoSigExp) 
+multiCox <- step(multiCox,direction = "both") 
+multiCoxSum <- summary(multiCox) 
+flasso<-multiCoxSum$coefficients %>% 
+  as.data.frame() 
+flasso<-rownames_to_column(flasso,var="varies")
+
+#####Figure 5B data#####
+library(forestplot)
+conf <- multiCoxSum$conf.int %>% as.data.frame()%>%rownames_to_column(var="varies")
+flasso <- inner_join(conf[,c(1:2,4:5)],flasso[,c(1,6)],by=c("varies"="varies"))
+flasso$CI95_down <- as.numeric(sprintf("%.3f",flasso$`lower .95`))
+flasso$CI95_up <-  as.numeric(sprintf("%.3f",flasso$`upper .95`))
+flasso$Hazard.Ratio <-  as.numeric(sprintf("%.3f",flasso$`exp(coef)`))
+flasso <- tidyr::unite(flasso,"CI95",CI95_down,CI95_up,sep="-",remove=FALSE)
+flasso$p.value <- pvalue(flasso$`Pr(>|z|)`)
+sample <- as.data.frame(flasso)
+sample$p.value <- as.numeric(sample$p.value)
+colnames(sample)
+
+```
+
+
+
+Figure 5B
+
+```{r figure5B}
+# Load libraries
+library(ggthemes)
+library(ggplot2)
+library(ggpubr)
+
+# Read the dataset
+data = read.table("data/OS_model.txt", header=T, row.names=1, sep="\t")
+sample <- as.data.frame(data)
+colnames(sample)
+sample$Hazard_Ratio <- as.numeric(sample$Hazard_Ratio)
+sample$CI95_up <- as.numeric(sample$CI95_up)
+sample$CI95_down <- as.numeric(sample$CI95_down)
+
+# Using ggplot2 to plot
+sample = sample %>%
+  mutate(species = ordered(species,
+                         levels=c("Clostridium_perfringens","GGB3321_SGB4394",
+                                  "Anaeroglobus_geminatus","GGB79916_SGB4587","GGB9424_SGB14794",
+                                  "Bacteroides_uniformis","Alistipes_finegoldii","Fusobacterium_varium",
+                                  "Senegalimassilia_anaerobia","Roseburia_sp_AF02_12","Hungatella_hathewayi",
+                                  "Streptococcus_parasanguinis","Dorea_sp_AF36_15AT","GGB9614_SGB15049",
+                                  "Bifidobacterium_longum","Enterobacter_roggenkampii"
+                                  )))
+
+p_forest <- ggplot(sample, aes(Hazard_Ratio, species)) +
+  geom_point(aes(color = ifelse(Hazard_Ratio > 1, "orange", "green")), 
+             shape = 15, size = 4) +  # shape=15 for square-shaped points
+  geom_errorbarh(aes(xmax = CI95_up, xmin = CI95_down, color = ifelse(Hazard_Ratio > 1, "orange", "green")), 
+                 size = 0.5, height = 0.2) +  # Set error bar color
+  scale_x_continuous(limits = c(0.4, 1.65), breaks = c(0.5, 1, 1.5)) +  # Removed 'position = "top"'
+  geom_vline(aes(xintercept = 1.0), color = "gray", linetype = "dashed", size = 0.6) +
+  scale_fill_manual(values = c("#74add1", "#a60026")) +
+  scale_color_manual(values = c("#74add1", "#a60026")) +
+  xlab(' ') +
+  ylab(' ') +
+  theme_few() +
+  theme(axis.text.x = element_text(size = 24, color = "black")) +
+  theme(axis.text.y = element_text(size = 24, color = "black")) +
+  theme(title = element_text(size = 24)) +
+  theme_classic() +
+  theme(axis.ticks.length = unit(-0.25, "cm"),
+        axis.text.x = element_text(margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm")),
+        axis.text.y = element_text(margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))) +
+  theme(legend.position = "none")
+p_forest
+
+
+library(magrittr)
+library(dplyr)
+allnew = read.table("data/OS_model.txt", header=T, row.names=1, sep="\t")
+# allnew[which(allnew$p<0.001),'sig'] <- '***'
+# allnew[which(allnew$p<0.01 & allnew$p>=0.001),'sig'] <- '**'
+# allnew[which(allnew$p<0.05 & allnew$p>=0.01),'sig'] <- '*'
+# allnew$species <- rownames(allnew)
+
+allnew = allnew %>%
+  mutate(species = ordered(species,
+                         levels=c("Clostridium_perfringens","GGB3321_SGB4394",
+                                  "Anaeroglobus_geminatus","GGB79916_SGB4587","GGB9424_SGB14794",
+                                  "Bacteroides_uniformis","Alistipes_finegoldii","Fusobacterium_varium",
+                                  "Senegalimassilia_anaerobia","Roseburia_sp_AF02_12","Hungatella_hathewayi",
+                                  "Streptococcus_parasanguinis","Dorea_sp_AF36_15AT","GGB9614_SGB15049",
+                                  "Bifidobacterium_longum","Enterobacter_roggenkampii"
+                                  )))
+
+p_dbrda_heatmap <- ggplot(allnew, aes(variable, species, fill = P_Value)) +
+  geom_tile(aes(width = 4, height = 1), size = 10) +
+  scale_fill_gradientn(colors = c("#a60026", "#f4a582", "#ffffff", "#92c5de", "#0571b0"),
+                       limits = c(0, 0.12), 
+                       breaks = c(0, 0.04, 0.08, 0.12)) +  # Custom gradient from red to blue
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    legend.title = element_text(angle = -90, hjust = 0.2),
+    axis.text.y = element_text(size = 10, colour = "black", family = "sans"),
+    axis.text.x = element_text(size = 10, colour = "black", family = "sans")
+  ) +
+  theme(text = element_text(family = 'sans', size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank()
+        ) +
+  theme(legend.direction = 'vertical', legend.position = "left") +
+  labs(x = NULL, y = NULL, fill = NULL) + 
+  guides(fill = guide_colorbar(barheight = 10, title = "P value", vjust = 3.72, title.position = "right")) +
+  coord_equal(ratio = 1.7)
+p_dbrda_heatmap
+
+
+## biomarker colored by Family
+optimal = 16
+imp_species = read.table("data/OS_model_family.txt", header=T, row.names= 1, sep="\t")
+imp_species = tail(imp_species, n = optimal)
+imp_species$Species = factor(rownames(imp_species), levels = rownames(imp_species))
+p04_species = ggplot(imp_species, aes(x = Species, y = importance2, fill = Family)) + 
+  geom_bar(stat = "identity") + theme_classic()+
+  coord_flip() + #main_theme+
+  scale_fill_manual(values = c("#5196d5","#00ceff","#ff630d","#9b82e1",
+                  "#e5acd7","#d2da93","#36999d","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,0.43),breaks=seq(0, 0.43, 0.1))+
+  labs(y = "Variable importance", x = NULL)+
+  theme_bw() + 
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    legend.title = element_text(angle = -90, hjust = 0.2),
+    axis.text.y = element_text(size=10, colour="black", family = "sans"),
+    axis.text.x = element_text(size=10, colour="black", family = "sans")
+  )+
+  #theme(legend.position = "none") +
+  theme(panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+#ggsave(paste("results/p04_species_family",".pdf", sep=""), p04_species, width=119 * 1.5, height=70 * 1.5, unit='mm')
+p04_species
+
+## Combine plots
+library(aplot)
+gg3 <- p_forest%>%insert_right(p_dbrda_heatmap)%>%insert_right(p04_species,width = 2)
+gg3
+ggsave("results/Figure 5B.pdf",gg3,width = 10,height = 7)
+```
+
+
+
+Figure 5C
+
+```{r figure5C}
+#####Figure 5C#####
+data_t$Riskscore <- predict(multiCox,newdata = data_t)
+cut <- median(data_t$Riskscore)
+data_t$PMS <- ifelse(data_t$Riskscore >=cut, "High","Low")
+table(data_t$PMS)
+theme <- theme_classic(base_size = 16, base_family = "",base_line_size =0.90)+
+  theme(
+    axis.text = element_text(face = "bold", size = 16, color = "black"),
+    axis.title.x = element_text(face = "bold", size = 16, color = "black"#, margin = margin(c(15, 0, 0, 0))
+                                ),
+    axis.title.y = element_text(face = "bold", size = 16, color = "black"#, margin = margin(c(0, 15, 0, 0))
+                                ),
+    axis.line=element_line(colour="black",size=0.90),
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank())
+fit1=survfit(Surv(OS,status)~PMS, data=data_t)
+pdf("results/Figure 5C.pdf", width = 10, height = 7)
+ggsurvplot(fit1,
+             pval =TRUE,
+             pval.size=8,
+             font.legend=c(16, "bold"),
+             font.x = c(16, "bold"),
+             font.y = c(16, "bold"),
+             font.tickslab = c(16, "bold"),
+             risk.table.fontsize=5,
+             tables.height = 0.30,
+             risk.table = TRUE,
+             censor=TRUE,
+             palette = c("#a60026","#74add1"),
+             xlab ="Time(months)",
+             ylab = 'Overall Survival probability',
+             #legend.labs = c("Low","High"),
+             legend.title=c(""),
+             legend=c(0.8,0.2),
+             legend.size=0.50,
+             xlim=c(0,85),
+             break.y.by = 0.25,
+             break.x.by=12,
+             conf.int = TRUE,
+             axes.offset=FALSE,
+             ggtheme = theme)
+dev.off()
+
+summary(fit1)
+restest <- pairwise_survdiff(Surv(OS,status)~PMS, p.adjust.method = "none",
+                             data=data_t);restest
+restest$p.value
+```
+
+
+Figure 5D
+
+```{r figure5D}
+###########################clinical ananlysis################################
+#####Figure 5D#####
+data_t$TNM_stage <- as.factor(ifelse(data_t$TNM %in% c("stageIVB"),"IVB","I-IVA"))
+data_t$TNM_stage <- relevel(data_t$TNM_stage,"I-IVA")
+data_t$PMS <- as.factor(data_t$PMS)
+data_t$PMS <- relevel(data_t$PMS,"Low")
+data_t$EBV.DNA <- ifelse(data_t$Before_treat_EBV.DNA>4000,"≥4000","<4000")
+res.cox <- coxph(Surv(OS,status)~Age+Sex+TNM_stage+EBV.DNA+PMS,
+                 data = data_t)
+cox <- summary(res.cox)
+ci <- cox$conf.int
+cox1<-cox$coefficients %>%as.data.frame()
+cox1 <- cbind(ci[,c(1,3,4)],cox1[5])
+cox1$CI95_down <-sprintf("%.3f",cox1$`lower .95`)
+cox1$CI95_up <- sprintf("%.3f",cox1$`upper .95`)
+cox1$Hazard.Ratio <- sprintf("%.3f",cox1$`exp(coef)`)
+cox1 <- tidyr::unite(cox1,"CI95",CI95_down,CI95_up,sep="-",remove=FALSE)
+cox1$`Pr(>|z|)` <- pvalue(cox1$`Pr(>|z|)`)
+cox1 <- rownames_to_column(cox1,var = "characterics")
+head(cox1,n=20)
+sample <- as.data.frame(cox1)
+colnames(sample)
+sample$Hazard.Ratio <- as.numeric(sample$Hazard.Ratio)
+sample$CI95_up <- as.numeric(sample$`lower .95`)
+sample$CI95_down <- as.numeric(sample$`upper .95`)
+pdf("results/Figure 5D.pdf", width = 8, height = 8)
+p <- forestplot(sample[,c(1,9,6,5)], 
+                mean = sample[,'Hazard.Ratio'],
+                lower = sample[,"CI95_up"],
+                upper = sample[,"CI95_down"],
+                boxsize = 0.3,
+                graph.pos=2,
+                graphwidth = unit(0.3,"npc"),
+                fn.ci_norm="fpDrawNormalCI",
+                col=fpColors(box="red", lines="gray", zero = "gray"),
+                lwd.ci=2,ci.vertices.height = 0.1,ci.vertices=TRUE,
+                zero=1,
+                lwd.zero=2,
+                grid=T,
+                lwd.xaxis=2,
+                title="species           HR             P.value ",
+                xlab="",
+                clip=c(-Inf,20),
+                colgap = unit(0.5,"cm"));p
+dev.off()
+```
+
+
+
+Figure 5E
+
+```{r figure5E}
+
+######Figure 5E-F#####
+p1 <- ggplot(data_t,aes(x=EBV.DNA,y=Riskscore))+
+  stat_boxplot(geom = "errorbar",width=0.2,position=position_dodge(0.8))+
+  geom_boxplot(width=0.6,alpha=1,position=position_dodge(0.8), outlier.shape = NA)+
+  theme(legend.position = "top")+
+  stat_compare_means(aes(group=EBV.DNA),method = "wilcox.test",label="p.format",label.y = c(4.1), label.x = 1.4)+
+  theme(panel.background = element_blank(),axis.line = element_line())+   ##去默认灰色背景颜色
+  geom_signif(annotations = c(""),
+              y_position = 4,
+              xmin = 1,
+              xmax = 2,
+              tip_length = c(0.02,0.02))+
+  labs(x = "EBV DNA", y = "PMS")+
+  geom_jitter(aes(color=EBV.DNA, fill=EBV.DNA),width =0.2,shape = 15,size=1)+
+  scale_fill_manual(values = c("#74add1","#a60026"))+
+  scale_color_manual(values = c("#74add1","#a60026"))+
+  theme(axis.text.x = element_text(angle =0, vjust = 1, hjust = 1));p1
+
+p2 <- ggplot(data_t,aes(x=TNM_stage,y=Riskscore))+
+  stat_boxplot(geom = "errorbar",width=0.2,position=position_dodge(0.8))+
+  geom_boxplot(width=0.6,alpha=1,position=position_dodge(0.8), outlier.shape = NA)+
+  theme(legend.position = "top")+
+  stat_compare_means(aes(group=TNM_stage),method = "wilcox.test",label="p.format",label.y = c(4.1), label.x = 1.4)+
+  theme(panel.background = element_blank(),axis.line = element_line())+   ##去默认灰色背景颜色
+  geom_signif(annotations = c(""),
+              y_position = 4,
+              xmin = 1,
+              xmax = 2,
+              tip_length = c(0.02,0.02))+
+  labs(x = "TNM stage", y = "PMS")+
+  geom_jitter(aes(color=TNM_stage, fill=TNM_stage),width =0.2,shape = 15,size=1)+
+  scale_fill_manual(values = c("#74add1","#a60026"))+
+  scale_color_manual(values = c("#74add1","#a60026"))+
+  theme(axis.text.x = element_text(angle =0, vjust = 1, hjust = 1));p2
+gg <- ggarrange(p1,p2,ncol = 2, nrow = 1);gg
+ggsave("results/Figure 5E.pdf",gg,width = 10,height = 7) 
+
+```
+
+
+
+Figure 5F
+
+```{r figure5F}
+#################################EBV DNA+PMS#################################
+#####Figure 5G-I#####
+data_t$Riskscore <- as.numeric(data_t$Riskscore)
+data_t$group <- ifelse(data_t$Before_treat_EBV.DNA>=4000 & data_t$Riskscore>=cut,"High",
+                       ifelse(data_t$Before_treat_EBV.DNA<4000 & data_t$Riskscore<cut,"Low","Median"))
+table(data_t$group)
+data_t1 <- filter(data_t,TNM_stage%in%c("I-IVA")) #data_t1 including I-IVA NPC
+data_t2 <- filter(data_t,TNM_stage%in%c("IVB"))   #data_t2 including IVB NPC
+fit1=survfit(Surv(OS,status)~group, data=data_t)
+pdf("results/Figure 5F.pdf", width = 10, height = 7)
+ggsurvplot(fit1,
+            pval =TRUE,
+            pval.size=6,
+            font.legend=c(16, "bold"),
+            font.x = c(16, "bold"),
+            font.y = c(16, "bold"),
+            font.tickslab = c(16, "bold"),
+            risk.table.fontsize=5,
+            tables.height = 0.30,
+            risk.table = TRUE, 
+            censor=TRUE,
+            palette = c("#a60026","#74add1","#FFABAB"),
+            xlab ="Time(months)",
+            ylab = 'Overall Survival probability',
+            legend.title=c(""),
+            legend=c(0.8,0.2),
+            legend.size=0.50,
+            xlim=c(0,85),
+            break.y.by = 0.25,
+            break.x.by=12,
+            axes.offset=FALSE,
+            conf.int = TRUE,
+            ggtheme = theme)
+dev.off()
+
+summary(fit1)
+restest <- pairwise_survdiff(Surv(OS,status) ~group, p.adjust.method = "none",
+                             data=data_t);restest
+restest$p.value
+
+```
+
+
+
+Figure 5G
+
+```{r figure5G}
+
+#####Figure 5J-L#####
+library(timeROC)
+# data_t1 <- filter(data_t,TNM_stage%in%c("I-IVA")) #data_t1 including I-IVA NPC
+# data_t2 <- filter(data_t,TNM_stage%in%c("IVB"))   #data_t2 including IVB NPC
+cln_roc <- data_t
+cln_roc$EBV.DNA <- ifelse(cln_roc$EBV.DNA=="≥4000",2,1)
+cln_roc$PMS <- ifelse(cln_roc$PMS=="High",2,1)
+cln_roc$group <- ifelse(cln_roc$group=="High",3,
+                        ifelse(cln_roc$group=="Median",2,1))
+ROC.risk <- timeROC(T = cln_roc$OS,
+                    delta = cln_roc$status,
+                    marker = cln_roc$PMS,
+                    cause = 1,
+                    weighting="marginal",
+                    times=c(36),   
+                    iid=TRUE)
+round(ROC.risk$AUC,3)
+Risk_95CI <- round(confint(ROC.risk, level = 0.90)$CI_AUC/100,3);Risk_95CI
+ROC.EBV <- timeROC(T = cln_roc$OS,
+                   delta = cln_roc$status,
+                   marker = cln_roc$EBV.DNA,
+                   cause = 1,
+                   weighting="marginal",
+                   times=c(36),   
+                   iid=TRUE)
+round(ROC.EBV$AUC,3)
+round(confint(ROC.EBV, level = 0.90)$CI_AUC/100,3)
+ROC.g <- timeROC(T = cln_roc$OS,
+                 delta = cln_roc$status,
+                 marker = cln_roc$group,
+                 cause = 1,
+                 weighting="marginal",
+                 times=c(36), 
+                 iid=TRUE)
+round(ROC.g$AUC,3)
+round(confint(ROC.g, level = 0.90)$CI_AUC/100,3)
+
+pdf("results/Figure 5G.pdf", width = 10, height = 7)
+plot(ROC.g, time = 36, col="#4DAF4A", lwd=2, title = "")
+plot(ROC.risk, time = 36, col="#E41A1C", lwd=2, add = T)
+plot(ROC.EBV, time = 36, col="#A65628", lwd=2, add = T)
+legend("bottomright",
+       c(paste0("Score+EBV DNA: ",round(ROC.g[["AUC"]][2],3)),
+         paste0("Score: ",round(ROC.risk[["AUC"]][2],3)), 
+         paste0("EBV DNA: ",round(ROC.EBV[["AUC"]][2],3))),
+       col=c("#4DAF4A","#E41A1C","#A65628"),
+       lty=1, lwd=2,bty = "n")
+dev.off()
+
+#Statistical Significance Analysis
+compare(ROC.EBV,ROC.risk)
+compare(ROC.EBV,ROC.g)
+
+```
+
+
+

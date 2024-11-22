@@ -1,0 +1,2654 @@
+---
+title: "Fig. 4. Identification and validation of microbial markers of NPC."
+author: "Baidefeng, Lankaiqi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# rm(list=ls())
+# load packages
+library(reshape2)
+library(ggplot2)
+library(ggprism)
+library(dplyr)
+library(plyr)
+library(caret)
+library(randomForest)
+library(PRROC)
+library(ROCR)
+library(pROC)
+library(yardstick)
+library(patchwork)
+library(cols4all)
+library(openxlsx)
+library(tidyverse)
+
+# load settings and functions
+source("scripts/randomforest.crossvalidation.R")
+
+mytheme = theme_classic() + 
+  theme(text = element_text(family = "sans", size = 10))+
+  theme(#legend.position="none",
+    legend.text = element_text(size=8),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=10, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=10, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=12, family = "sans"),
+    strip.text.x = element_text(size=10, angle = 0),
+    strip.text.y = element_text(size=10, angle = 0),
+    panel.border = element_rect(colour = "black"),
+    plot.title = element_text(size=10, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.5),
+    legend.position = c(0.85, 0.65),
+    )+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.2, colour = "black"))
+
+```
+
+
+## Model tests using different taxonomic levels
+
+```{r model testing}
+mytheme2 = theme_bw() + theme(text = element_text(family = "sans", size = 7))+
+  theme(legend.position="none",
+    legend.text = element_text(size=12),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=12, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=12, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=12),
+    strip.text.x = element_text(size=12, angle = 0),
+    strip.text.y = element_text(size=12, angle = 0),
+    plot.title = element_text(size=12, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))
+
+data_level <- read.table(file = "data/model_different_levels.txt", sep = "\t", header = T, row.names=1)
+data_level = as.data.frame(data_level)
+
+library(ggplot2)
+data_level = data_level %>%
+  mutate(Level = ordered(Level,
+                         levels=c("Phylum", "Class","Order", "Family","Genus", "Species")))
+
+# summary function (average +/- sd)
+data_summary <- function(x) {
+   m <- mean(x)
+   ymin <- m-sd(x)
+   ymax <- m+sd(x)
+   return(c(y=m,ymin=ymin,ymax=ymax))
+}
+# plot
+p1 <- ggplot(data_level, aes(x=Level, y=AUROC, color = "#74add1")) + 
+  geom_jitter(aes(color="#74add1"), position = position_jitter(0.0), size = 2.8, alpha = 1, color= "#74add1")+
+  mytheme2+stat_summary(fun.data=data_summary, color="#a60026", size = 0.5)+
+  geom_hline(yintercept = 0.9, colour='black', lwd=0.36, linetype="dashed")+
+  theme(axis.text.x=element_text(angle=45,hjust=1.2, vjust=1.0))
+ggsave("results/Figure S4A.pdf",p1,width = 5,height = 4.2)
+p1
+```
+
+
+
+## Diagnostic model using filtered species features
+
+Species
+Load data
+
+```{r species load data}
+# Species data
+data_species <- read.table(file = "data/Metaphlan4_bacteria_species.txt", sep = "\t", header = T, check.names = FALSE)
+data_species <- aggregate(.~ Species, data = data_species, sum)
+rownames(data_species) = data_species$Species
+data_species = data_species[, -1]
+data_species = apply(data_species, 2, function(x) x/100)
+data_species = as.data.frame(data_species)
+
+#1.microbiota prevalence > 5%
+zero_counts <- vector("integer", nrow(data_species))
+for (i in 1:nrow(data_species)) {
+  count <- 0
+  for (j in 1:ncol(data_species)) {
+    if (data_species[i, j] == 0) {
+      count <- count + 1
+    }
+  }
+  zero_counts[i] <- count
+}
+# output
+zero_count = as.data.frame(zero_counts)
+data_species2 = data_species
+data_species2$zero_counts = zero_count$zero_counts
+data_species2$all_counts = 779
+data_species2$sample_percent = round(1-data_species2$zero_counts/data_species2$all_counts, 6)
+data_species3 = data_species2 %>% filter(data_species2$sample_percent >= 0.05)
+data_species3 = data_species3[, -c(780, 781, 782)]
+
+#2.relative abundance > 0.01%
+data_species3 = apply(data_species3, 2, function(x) x/sum(x))
+data_species3 = as.data.frame(data_species3)
+count_t_values = apply(data_species3, 1, function(x)sum(x>=0.0001))
+count_t_values = as.data.frame(count_t_values)
+data_species3$count_t_values = count_t_values$count_t_values
+data_species3$all_counts = 779
+data_species3$t_percent = round(data_species3$count_t_values/data_species3$all_counts, 6)
+data_species4 = data_species3 %>% filter(data_species3$t_percent >= 0.05)
+data_species4 = data_species4[, -c(780, 781, 782)]
+
+# # log10-transformation
+# data_species5 = log10(data_species4 + 1e-05)
+# # z-score standardization
+# data_species6 = apply(data_species5, 1, function(x){
+#   return((x-mean(x))/sd(x))
+# })
+# data_species6 = t(data_species6)
+# write.csv(data_species6, "rf_model_species_used.csv")
+
+# metadata 
+design <- read.table(file = "data/group434.txt", sep = "\t", header = T, row.names=1)
+
+data_species4 <- data_species4[, colnames(data_species4)%in%rownames(design)]
+
+# log10-transformation
+data_species5 = log10(data_species4 + 1e-05)
+```
+
+
+Species
+Data split
+
+```{r data split}
+# z-score standardization
+data_species6 = apply(data_species5, 1, function(x){
+  return((x-mean(x))/sd(x))
+})
+data_species6 = t(data_species6)
+
+# used data
+otutab = data_species6
+design2 = design
+
+# Select by manual set group
+if (TRUE){
+  sub_design = subset(design2, Group %in% c("NPC","Control")) 
+  sub_design$group  = factor(sub_design$Group, levels=c("NPC","Control"))
+}
+idx = rownames(sub_design) %in% colnames(otutab)
+sub_design = sub_design[idx,]
+sub_otutab = otutab[,rownames(sub_design)]
+
+# Create data partition
+otutab_t_species = as.data.frame(t(sub_otutab))
+# Set classification info.
+otutab_t_species$group = factor(sub_design$Group, levels = c("NPC","Control"))
+otutab_t_species = na.omit(otutab_t_species)
+row.name = rownames(otutab_t_species)
+
+# data split
+set.seed = 615
+sam.row.name = sample(row.name, 304, replace = FALSE) # 434 samples
+train_data_species = otutab_t_species[sam.row.name, ]
+test_data_species = setdiff(otutab_t_species, train_data_species)
+```
+
+
+Species
+Model training
+
+```{r species rf models}
+# load data
+dat1_species <- train_data_species
+conf_species <- as.data.frame(dat1_species$group)
+rownames(conf_species) <- rownames(dat1_species)
+colnames(conf_species) <- "Group"
+conf_species$sample <- rownames(conf_species)
+conf_species <- as.data.frame(conf_species)
+dat2_species <- dat1_species
+conf2_species <- conf_species
+conf2_species$Group = as.factor(as.character(conf2_species$Group))
+outcome_species = conf2_species$Group
+outcome_species <- sub("Control","0",outcome_species)
+outcome_species <- sub("NPC","1",outcome_species)
+outcome_species <-as.factor(outcome_species)
+dat_species <- dat2_species
+X_species <- as.data.frame(dat_species)
+X_species$outcome_species = outcome_species
+X_species <- X_species[, -401]
+
+# 5*10_cross validation
+set.seed(999)
+result_species <- replicate(5, rfcv1(X_species[,-ncol(X_species)], X_species$outcome_species, cv.fold=10,step=0.9), simplify=FALSE)
+error.cv <- sapply(result_species, "[[", "error.cv")
+matplot(result_species[[1]]$n.var, cbind(rowMeans(error.cv), error.cv), type="l",
+        lwd=c(2, rep(1, ncol(error.cv))), col=1, lty=1, log="x",
+        xlab="Number of variables", ylab="CV Error")
+error.cv.cbm <- cbind(rowMeans(error.cv), error.cv)
+cutoff <- min (error.cv.cbm[,1])+sd(error.cv.cbm[,1])
+error.cv.cbm[error.cv.cbm[,1] < cutoff,]
+abline(v=26,col="pink",lwd=2)
+
+optimal = 26
+error.cv.cbm2 <- as.data.frame(error.cv.cbm)
+error.cv.cbm2$num <- rownames(error.cv.cbm2)
+n.var = error.cv.cbm2$num
+n.var = as.numeric(n.var)
+error.cv = error.cv.cbm2[,1:5]
+colnames(error.cv) = paste('err',1:5,sep='.')
+err.mean = apply(error.cv,1,mean)
+allerr = data.frame(num=n.var,err.mean=err.mean,error.cv)
+allerr = as.data.frame(allerr)
+write.table(allerr, file = "results/Species_rfcv_5_10_new.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+
+allerr <- read.table(file = "results/Species_rfcv_5_10_new.txt", sep = "\t", header = T, row.names=1)
+mytheme3 = theme_bw() + theme(text = element_text(family = "sans", size = 7))+
+  theme(legend.position="none",
+    legend.text = element_text(size=14),
+    legend.title = element_blank(), 
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=14, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=14, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=14),
+    strip.text.x = element_text(size=14, angle = 0),
+    strip.text.y = element_text(size=14, angle = 0),
+    plot.title = element_text(size=14, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))
+
+p01_species = ggplot(allerr, aes(x=allerr$num)) + 
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.1), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.2), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.3), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.4), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.5), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.mean), colour = 'black') + 
+  geom_vline(xintercept = optimal, colour='black', lwd=0.36, linetype="dashed") + 
+  geom_hline(yintercept = 0.2258133, colour='black', lwd=0.36, linetype="dashed") +
+  mytheme3+
+  coord_trans(x = "log2") +
+  scale_x_continuous(breaks = c(10, 30, 50, 100, 200, 400)) + 
+  labs(x='Number of species ', y='Cross-validation error rate') +
+  annotate("text", x = optimal, y = max(allerr$err.mean), label=paste("optimal = ", optimal, sep="")) +
+  #main_theme+ 
+  theme_bw() + theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none",
+        axis.title= element_text(size=10, family = "sans"))
+ggsave(p01_species, file = "results/Species_rfcv_5_10_top26.pdf", width = 75*1.5, height = 60*1.5, unit = 'mm')
+p01_species
+
+# pick 26 marker by cross validation
+k=1
+b <- matrix(0,ncol=400,nrow=50)
+for(i in 1:5){
+  for(j in 1:10){
+    b[k,]<-result_species[[i]]$res[[j]]
+    k=k+1
+  }}
+mlg.list<-b[,1:26]
+list<-c()
+k=1
+for(i in 1:26){
+  for(j in 1:50){
+    list[k]<-mlg.list[j,i]
+    k=k+1
+  }}
+mlg.sort<-as.matrix(table(list))
+mlg.sort<-mlg.sort[rev(order(mlg.sort[,1])),]
+pick_species<- as.numeric(names(head(mlg.sort,26)))
+tmp= X_species[,-ncol( X_species)]
+mlg.pick.species<-colnames(tmp)[pick_species]
+write.table(mlg.pick.species,"results/cross_validation_pick_26_in_species.txt",sep="\t",quote=F)
+
+## train.set
+## Compare the probability of predicting nasopharyngeal carcinoma between NPC and healthy control group
+train1_species <- X_species[,c(pick_species,400)]
+train1_species <-data.frame(train1_species)
+set.seed(32)
+train1.rf_species <- randomForest(outcome_species~., data =train1_species,
+                          importance = TRUE)
+train1.pre_species <- predict(train1.rf_species,type="prob")
+p.train_species <- train1.pre_species[,2]
+write.table(p.train_species,"results/species.cross_validation.26makr.predict.in.train.txt", sep="\t",quote=F)
+
+train1_pre2_species <- data.frame(outcome_species, p.train_species)
+train1_pre2_species$outcome_species <- as.factor(train1_pre2_species$outcome_species)
+train1_pre2_species$outcome_species <- sub("0","Healthy",train1_pre2_species$outcome_species)
+train1_pre2_species$outcome_species <- sub("1","NPC",train1_pre2_species$outcome_species)
+compaired = list(c("Healthy", "NPC"))
+
+write.table(train1_pre2_species,"results/species.cross_validation.26makr.train1_species.txt", sep="\t",quote=F)
+
+library(ggsignif)
+library(scales)
+compaired2 = list(c("Healthy", "NPC"))
+train1_pre2_species <- read.table(file = "results/species.cross_validation.26makr.predict.in.train_boxplot.txt", sep = "\t", header = T, row.names=1)
+p02_species <- ggplot(train1_pre2_species, aes(x=outcome_species, y=p.train_species, fill=outcome_species)) + 
+  geom_boxplot(position=position_dodge(width =0.4),width=0.5, size = 0.4,
+               fill = "transparent", 
+               outlier.shape = NA,
+               linetype = "dashed")+
+  theme_classic()+
+  labs(x = NULL, y = "Probability of NPC", color = outcome_species)+
+  geom_jitter(aes(color=outcome_species),position = position_jitter(0.15), 
+                size = 0.3, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper.., fill=outcome_species), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.4,outlier.shape = NA)+
+  geom_signif(comparisons = compaired2, step_increase = 0.3, map_signif_level = F,
+            test = wilcox.test, color = "black", size = 0.2, textsize = 3)+
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#74add1","#CD5B45"))+
+  scale_color_manual(values = c("#74add1","#CD5B45"))+
+  theme(panel.background = element_blank(), panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(), legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))
+ggsave(paste("results/Species_26markers_npc_healthy_boxplot_train",".pdf", sep=""), p02_species, width=49, height=70, unit='mm')
+p02_species
+
+# Species biomarker importance
+varImpPlot(train1.rf_species, main = "Top feature importance", n.var = 17)
+write.table(train1.rf_species$confusion, file = "results/Species_confusion_rf2.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+imp_species = as.data.frame(round(importance(train1.rf_species), 2))
+imp_species = imp_species[order(imp_species$MeanDecreaseAccuracy, decreasing = F),]
+write.table(imp_species, file = "results/Species_imp_rf2.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+
+system("awk 'NR==FNR{a[$8]=$3} NR>FNR{print $0\"\t\"a[$1]}' data/taxonomy_779.txt results/Species_imp_rf2.txt | sed '1 s/$/Phylum/' > results/Species_imp_phylum_rf2.txt")
+system("awk 'NR==FNR{a[$8]=$6} NR>FNR{print $0\"\t\"a[$1]}' data/taxonomy_779.txt results/Species_imp_rf2.txt | sed '1 s/$/Phylum/' > results/Species_imp_family_rf.txt")
+
+
+## Draw a histogram of the species selected by the model, with MeanDecreaseAccuracy on the horizontal axis and species on the vertical axis, colored by Phylum
+imp_species = read.table("results/Species_imp_phylum_rf2.txt", header=T, row.names= 1, sep="\t")
+imp_species = tail(imp_species, n = optimal)
+imp_species$Species = factor(rownames(imp_species), levels = rownames(imp_species))
+p03_species = ggplot(imp_species, aes(x = Species, y = MeanDecreaseAccuracy, fill = Phylum)) + 
+  geom_bar(stat = "identity") + theme_classic()+
+  scale_fill_manual(values = c("#63B8FF","orange","#4AB3AA", "#D10640"))+
+    scale_color_manual(values = c("#63B8FF", "orange","#4AB3AA","#D10640"))+
+  coord_flip() + #main_theme+
+  theme(legend.position = c(0.85,0.8))+
+  scale_y_continuous(expand = c(0,0))+
+  labs(y = "Mean Decrease Accuracy", x = "Species")
+ggsave(paste("results/Species_top_feautre_top26markers_phylum",".pdf", sep=""), p03_species, width=119 * 1.5, height=80 * 1.5, unit='mm')
+p03_species
+
+
+# MaAsLin2 Coef Bar Plot
+imp_species01 = read.table("results/Species_imp_rf2.txt", header=T, row.names= 1, sep="\t")
+imp_species$Species2 = factor(rownames(imp_species), levels = rownames(imp_species))
+imp_species01 = imp_species01 %>%
+  mutate(Species2 = ordered(Species2,
+                         levels=c("Ruminococcus sp AF13 28","Clostridium sp AT4","Blautia obeum",
+                                  "Roseburia inulinivorans","Faecalibacillus intestinalis","Anaerobutyricum soehngenii",
+                                  "Clostridium sp AM22 11AC","Bilophila wadsworthia",
+                                  "Lachnospira pectinoschiza","Clostridium sp AF34 10BH","Eubacterium ramulus",
+                                  "Eubacterium ventriosum","Roseburia hominis","Phocaeicola vulgatus",
+                                  "Rothia mucilaginosa","Roseburia intestinalis","Oscillibacter sp ER4",
+                                  "Eggerthella lenta","Alistipes putredinis","Escherichia coli", 
+                                  "Parabacteroides distasonis","Roseburia faecis","Bacteroides uniformis",
+                                  "Mediterraneibacter butyricigenes","Romboutsia timonensis","Anaerostipes hadrus"
+                                  )))
+
+library(ggplot2)
+library(viridis)
+p01 <- ggplot(imp_species01, aes(Species2, Coef, fill = POS)) +  
+  geom_bar(stat = "identity", aes(fill = imp_species01$POS), width =0.7, linewidth = 0.6) +   
+  labs(x = "",y="Coef by MaAsLin2") +  theme_classic() +#main_theme+
+  theme(legend.position = "none") +  theme(axis.text = element_text(size = 12)) 
+  theme(axis.title.x = element_text(vjust = 0, size = 12, face = "plain"))
+  theme(axis.title.y = element_text(vjust = 0, size = 12, face = "plain")) 
+  theme(plot.title = element_text(size = 15, face = "bold")) +  coord_flip() +
+  theme(text = element_text(family = 'sans', size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.line.y = element_blank()
+        )+
+  scale_fill_manual(values = c("#74add1","#a60026"))+
+    scale_color_manual(values = c("#74add1","#a60026"))+
+  theme(axis.line = element_line(color = "black", linewidth = 0.8)) # 调整坐标轴样式
+p01
+
+allnew = read.table("results/Species_imp_rf2.txt", header=T, row.names=1, sep="\t")
+imp_species$Species2 = factor(rownames(imp_species), levels = rownames(imp_species))
+allnew$FDR <- -log10(allnew$FDR)
+allnew = allnew %>%
+  mutate(Species2 = ordered(Species2,
+                         levels=c("Ruminococcus sp AF13 28","Clostridium sp AT4","Blautia obeum",
+                                  "Roseburia inulinivorans","Faecalibacillus intestinalis","Anaerobutyricum soehngenii",
+                                  "Clostridium sp AM22 11AC","Bilophila wadsworthia",
+                                  "Lachnospira pectinoschiza","Clostridium sp AF34 10BH","Eubacterium ramulus",
+                                  "Eubacterium ventriosum","Roseburia hominis","Phocaeicola vulgatus",
+                                  "Rothia mucilaginosa","Roseburia intestinalis","Oscillibacter sp ER4",
+                                  "Eggerthella lenta","Alistipes putredinis","Escherichia coli", 
+                                  "Parabacteroides distasonis","Roseburia faecis","Bacteroides uniformis",
+                                  "Mediterraneibacter butyricigenes","Romboutsia timonensis","Anaerostipes hadrus"
+                                  )))
+p01_heatmap <- ggplot(allnew, aes(variable, Species2, fill = FDR)) +
+  geom_tile(aes(width = 4, height = 1), size = 10) +
+  scale_fill_gradient2(low = "#74add1",  mid = "#e1eff3", high = "#a60026",limit=c(0,25))+
+  theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    legend.title = element_text(angle = -90, hjust = 0.2),
+    axis.text.y = element_text(size=10, colour="black", family = "sans"),
+    axis.text.x = element_text(size=10, colour="black", family = "sans")
+  )+
+  theme(text = element_text(family = 'sans', size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank()
+        )+
+  theme(legend.direction='vertical', legend.position = "left")+
+  labs(x=NULL,y=NULL,fill=NULL) + 
+  guides(fill=guide_colorbar(barheight = 10,title = "P value", vjust = 3.72, title.position = "right"))+
+  coord_equal(ratio = 1.7)
+p01_heatmap
+
+
+## Draw a histogram of the species selected by the model, with MeanDecreaseAccuracy on the horizontal axis and species on the vertical axis, colored by Family
+imp_species = read.table("results/Species_imp_rf2.txt", header=T, row.names= 1, sep="\t")
+imp_species = tail(imp_species, n = optimal)
+imp_species$Species = factor(rownames(imp_species), levels = rownames(imp_species))
+p04_species = ggplot(imp_species, aes(x = Species, y = MeanDecreaseAccuracy, fill = Family)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + #main_theme+
+  scale_fill_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#9b82e1",
+                  "#e5acd7","#36999d","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+  scale_y_continuous(expand = c(0,0))+
+  labs(y = "Mean Decrease Accuracy", x = "Species")
+#ggsave(paste("results/Species_top_feautre_family",".pdf", sep=""), p04_species, width=119 * 1.5, height=70 * 1.5, unit='mm')
+p04_species
+
+
+right_1 <- ggplot(imp_species,aes(x = Species,y = MeanDecreaseAccuracy, fill = Family)) +
+      geom_bar(stat = "identity") +
+      coord_flip() +#main_theme+
+  theme_bw()+
+  theme(text = element_text(family = 'sans', size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+        )+
+  scale_fill_manual(values = c("#d2da93","#5196d5","#00ceff","#ff630d","#9b82e1",
+                  "#e5acd7","#36999d","#ec8181","#dfc6a5","#e50719",
+                  "#d27e43","#8a4984","#fe5094","#8d342e","#f94e54",
+                  "#ffad00","#36999d","#00fc8d","#b64aa0","#9b82e1"))+
+      scale_x_discrete(labels= imp_species$Species, position="top")+
+      scale_y_continuous(expand=expansion(add=c(0.1,0.1)),
+                         limits=c(0,20),breaks=c(0,5,15,20))
+right_1
+ggsave(paste("results/Species_top_feautre_family_new",".pdf", sep=""), right_1, width=119 * 1.5, height=90 * 1.5, unit='mm')
+
+library(aplot)
+gg2 <- p01%>%insert_right(p01_heatmap,width = 0.3)
+gg2
+ggsave(paste("results/Species_top_feautre_family_new2",".pdf", sep=""), gg2, width=48 * 1.5, height=90 * 1.5, unit='mm')
+
+library(aplot)
+gg3 <- p01%>%insert_right(p01_heatmap)%>%insert_right(right_1,width = 1)
+gg3
+
+ggsave("results/species_biomarker_01.pdf",gg3,width = 10,height = 7)
+```
+
+
+Species
+Train set
+ROC curve
+
+```{r species train set roc curve}
+# ROC in train set
+roc1_species_train <- roc(outcome_species, p.train_species,
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE
+            )
+# get average value of AUROC and confidence intervals
+auc_species_train = round(roc1_species_train$auc,3)
+roc1_species_train2 <- plot.roc(outcome_species, p.train_species, ci=TRUE, print.auc=TRUE)
+ci_low_species_train = round(roc1_species_train2$ci[1], 3)
+ci_high_species_train = round(roc1_species_train2$ci[3], 3)
+# calculate 95% confidence intervals
+roc.list <- list(roc1_species_train)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc1_species_train, 
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p1_species_train <- ggroc(roc.list, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+ coord_equal()+ 
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none")+ 
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + 
+  coord_fixed(ratio = 0.9)+ ggtitle("Training set (n = 336)")+
+  geom_line(size = 0.8)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_species_train), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_species_train, "-", ci_high_species_train), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_species_train <- p1_species_train + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/model_auroc_train_set",".pdf", sep=""), p1_32_train, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_species_train
+```
+
+
+Species
+Test set
+ROC curve
+
+```{r cars}
+# ROC in test set
+dat3_species_test <- test_data_species
+dat3_species_test <- data.frame(dat3_species_test)
+
+set.seed(32)
+test_species <- predict(train1.rf_species, dat3_species_test, type="prob")
+conf3_species_test <- as.data.frame(dat3_species_test$group)
+rownames(conf3_species_test) <- rownames(dat3_species_test)
+colnames(conf3_species_test) <- "Group"
+conf3_species_test$sample <- rownames(conf3_species_test)
+
+rN.test <- rownames(test_species)
+rN.test <- sub("X","",rN.test)
+rN.conf <- rownames(conf3_species_test)
+gid <- intersect(rN.test ,rN.conf)
+test_species <- test_species[pmatch(gid, rN.test), ]
+conf3_species_test <- conf3_species_test[pmatch(gid, rN.conf), ]
+write.table(test_species[, 2],"results/species.cross_validation.predict.in.test.txt",
+           sep="\t",quote=F)
+
+compaired2 = list(c("Healthy", "NPC"))
+test1_pre2_species <- read.table(file = "results/species.cross_validation.predict.in.box.txt", sep = "\t", header = T, row.names=1)
+p02_species_test <- ggplot(test1_pre2_species, aes(x=outcome_species, y=p.test_species, fill=outcome_species)) +
+  geom_boxplot(position=position_dodge(width =0.4),width=0.5, size = 0.4,
+               fill = "transparent",
+               outlier.shape = NA,
+               linetype = "dashed")+
+  theme_classic()+
+  labs(x = NULL, y = "Probability of NPC", color = outcome_species)+
+  geom_jitter(aes(color=outcome_species),position = position_jitter(0.15),
+                size = 0.3, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper.., fill=outcome_species), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.4,outlier.shape = NA)+
+  geom_signif(comparisons = compaired2, step_increase = 0.3, map_signif_level = F,
+            test = wilcox.test, color = "black", size = 0.2, textsize = 3)+
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#74add1","#CD5B45"))+
+  scale_color_manual(values = c("#74add1","#CD5B45"))+
+  theme(panel.background = element_blank(), panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(), legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))
+ggsave(paste("results/Species_npc_healthy_boxplot_test2",".pdf", sep=""), p02_species_test, width=49, height=70, unit='mm')
+p02_species_test
+
+
+# test set ROC 
+outcome_species_test = conf3_species_test$Group
+outcome_species_test <- sub("Healthy","0",outcome_species_test)
+outcome_species_test <- sub("NPC", "1", outcome_species_test)
+roc1_species_test <- roc(outcome_species_test, test_species[,2],
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE
+            )
+# AUROC
+roc_species_test2 = roc(outcome_species_test, test_species[,2])
+# get average value of AUROC and confidence intervals
+auc_species_test = round(roc_species_test2$auc,3)
+roc_species_test2_2 <- plot.roc(outcome_species_test, test_species[, 2],
+                   ci=TRUE, print.auc=TRUE)
+ci_low_species_test = round(roc_species_test2_2$ci[1], 3)
+ci_high_sepcies_test = round(roc_species_test2_2$ci[3], 3)
+
+# calculate 95% confidence intervals
+roc.list <- list(roc_species_test2)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc_species_test2, 
+               specificities=seq(0, 1, 0.01)) 
+
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+
+# plot
+p1_species_test <- ggroc(roc.list, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none") + coord_equal() + coord_fixed(ratio = 0.9)+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + 
+  ggtitle("Testing set (n = 144)")+
+  geom_line(size = 0.8)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_species_test), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_species_test, "-", ci_high_sepcies_test), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_species_test <- p1_species_test + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    #fill = i + 1,
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/model_auroc_test_set_new",".pdf", sep=""), p3_32_test, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_species_test
+
+p_species_all = p1_species_train + p1_species_test
+ggsave(paste("results/model_auroc_both_set_new",".pdf", sep=""), p_species_all, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_species_all
+```
+
+
+Species
+Train and test combination (AUROC)
+
+```{r species train and test combination}
+# Train and test set
+roc.list01 <- list(roc1_species_train, roc_species_test2)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_species_train, 
+               specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc_species_test2,
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_all_species <- ggroc(roc.list01, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  #ggtitle("Train set")+
+  geom_line(size = 0.6)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(values=c("#EE3A8C","#008B8B","#374383"),
+                     name= "",
+                      labels = c("Training set (AUC = 0.917 (CI = 0.884-0.949))", "Testing set (AUC = 0.908 (CI = 0.856-0.961))")
+                      )
+
+col.list = list("#EE3A8C","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:2) {
+  p_all_species <- p_all_species + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.2,
+    inherit.aes = F)
+}
+ggsave(paste("results/model_auroc_both_set_new02",".pdf", sep=""), p_all_species, width=75 * 1.5, height=60 * 1.5, unit='mm')
+p_all_species
+```
+
+
+
+
+## Diagnostic models combined species and KO genes for npc and control
+KO genes
+data load
+
+```{r KO data load}
+## KO gene family
+df3_k <- read.table(file = "data/KO_779.txt", sep = "\t", header = T, check.names = FALSE)
+# sum of KOs
+data_k<-aggregate(.~ Gene_family,data=df3_k,sum)
+rownames(data_k) = data_k$Gene_family
+data_k = data_k[, -1]
+data_KO = data_k
+
+#1.microbiota prevalence > 5%
+zero_counts <- vector("integer", nrow(data_KO))
+for (i in 1:nrow(data_KO)) {
+  count <- 0
+  for (j in 1:ncol(data_KO)) {
+    if (data_KO[i, j] == 0) {
+      count <- count + 1
+    }
+  }
+  zero_counts[i] <- count
+}
+# output
+zero_count = as.data.frame(zero_counts)
+data_KO2 = data_KO
+data_KO2$zero_counts = zero_count$zero_counts
+data_KO2$all_counts = 779
+data_KO2$sample_percent = round(1-data_KO2$zero_counts/data_KO2$all_counts, 6)
+data_KO3 = data_KO2 %>% filter(data_KO2$sample_percent >= 0.05)
+data_KO3 = data_KO3[, -c(780, 781, 782)]
+
+#2.relative abundance > 0.01%
+# 1E-6
+data_KO3 = apply(data_KO3, 2, function(x) x/sum(x))
+data_KO3 = as.data.frame(data_KO3)
+count_t_values = apply(data_KO3, 1, function(x)sum(x>=0.000001))
+count_t_values = as.data.frame(count_t_values)
+data_KO3$count_t_values = count_t_values$count_t_values
+data_KO3$all_counts = 779
+data_KO3$t_percent = round(data_KO3$count_t_values/data_KO3$all_counts, 6)
+data_KO4 = data_KO3 %>% filter(data_KO3$t_percent >= 0.05)
+data_KO4 = data_KO4[, -c(780, 781, 782)]
+
+data4_k <- data_KO4[, colnames(data_KO4)%in%rownames(design)]
+data4_k <- data4_k[c(-4095,-4096), ]
+
+# log10-transformation
+data4_k = log10(data4_k + 1e-07)
+
+```
+
+
+KO genes
+Data split
+
+```{r KO data split}
+# KO genes
+data4_k = apply(data4_k, 1, function(x){
+  return((x-mean(x))/sd(x))
+})
+data4_k = t(data4_k)
+
+# used data
+otutab = data4_k
+design2 = design
+
+# Select by manual set group
+if (TRUE){
+  sub_design = subset(design2, Group %in% c("NPC","Control")) 
+  sub_design$group  = factor(sub_design$Group, levels=c("NPC","Control"))
+}
+idx = rownames(sub_design) %in% colnames(otutab)
+sub_design = sub_design[idx,]
+sub_otutab = otutab[,rownames(sub_design)]
+
+# Create data partition
+otutab_t_species = as.data.frame(t(sub_otutab))
+# Set classification info.
+otutab_t_species$group = factor(sub_design$Group, levels = c("NPC","Control"))
+
+# data split
+set.seed = 515
+otutab_t_species = na.omit(otutab_t_species)
+row.name = rownames(otutab_t_species)
+sam.row.name = sample(row.name, 304, replace = FALSE)
+train_data_KO = otutab_t_species[sam.row.name, ]
+test_data_KO = setdiff(otutab_t_species, train_data_KO)
+
+```
+
+
+### Model training with KO genes
+
+```{r KO rf models}
+# load data
+dat1_KO <- train_data_KO
+conf_KO <- as.data.frame(dat1_KO$group)
+rownames(conf_KO) <- rownames(dat1_KO)
+colnames(conf_KO) <- "Group"
+conf_KO$sample <- rownames(conf_KO)
+
+dat2_KO <- dat1_KO[,conf_KO$Group=="Control" | conf_KO$Group=="NPC"]
+conf2_KO <- conf_KO[conf_KO$Group=="Control" | conf_KO$Group=="NPC",]
+conf2_KO$Group = as.factor(as.character(conf2_KO$Group))
+outcome_KO = conf2_KO$Group
+outcome_KO <- sub("Control","0",outcome_KO)
+outcome_KO <- sub("NPC","1",outcome_KO)
+outcome_KO <- as.factor(outcome_KO)
+dat_KO <- dat2_KO
+X_KO <- as.data.frame(dat_KO)
+X_KO$outcome_KO = outcome_KO
+X_KO <- X_KO[, -4095]
+
+# 5*10_cross validation
+set.seed(999)
+result_KO <- replicate(5, rfcv1(X_KO[,-ncol(X_KO)], X_KO$outcome_KO, cv.fold=10,step=0.9), simplify=FALSE)
+error.cv <- sapply(result_KO, "[[", "error.cv")
+matplot(result_KO[[1]]$n.var, cbind(rowMeans(error.cv), error.cv), type="l",
+        lwd=c(2, rep(1, ncol(error.cv))), col=1, lty=1, log="x",
+        xlab="Number of variables", ylab="CV Error")
+error.cv.cbm<-cbind(rowMeans(error.cv), error.cv)
+cutoff<-min (error.cv.cbm[,1])+sd(error.cv.cbm[,1])
+error.cv.cbm[error.cv.cbm[,1]<cutoff,]
+abline(v=49,col="pink",lwd=2)
+
+optimal = 49
+error.cv.cbm2 <- as.data.frame(error.cv.cbm)
+error.cv.cbm2$num <- rownames(error.cv.cbm2)
+n.var = error.cv.cbm2$num
+n.var = as.numeric(n.var)
+error.cv = error.cv.cbm2[,1:5]
+colnames(error.cv) = paste('err',1:5,sep='.')
+err.mean = apply(error.cv,1,mean)
+allerr = data.frame(num=n.var,err.mean=err.mean,error.cv)
+allerr = as.data.frame(allerr)
+# order
+#allerr$num <- factor(allerr$num, levels = unique(allerr$num[order(allerr$num)]))
+write.table(allerr, file = "results/KO_rfcv315_10_new_KO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+p01_KO = ggplot(allerr, aes(x=allerr$num)) +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.1), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.2), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.3), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.4), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.5), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.mean), colour = 'black') +
+  geom_vline(xintercept = optimal, colour='black', lwd=0.36, linetype="dashed") +
+  geom_hline(yintercept = 0.1950851, colour='black', lwd=0.36, linetype="dashed") +
+  coord_trans(x = "log2") +
+  scale_x_continuous(breaks = c(1, 2, 5, 10, 20, 30, 50, 100, 200, 400, 1000, 2000, 4000)) +
+  labs(x='Number of species ', y='Cross-validation error rate') +
+  annotate("text", x = optimal, y = max(allerr$err.mean), label=paste("optimal = ", optimal, sep="")) +
+  #main_theme+ 
+  theme_bw() + theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none",
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))
+ggsave(p01_KO, file = "results/KO_rfcv315_10_top49_new_KO.pdf", width = 129, height = 110, unit = 'mm')
+p01_KO
+
+# pick 19 marker by coross validation
+k=1
+b <- matrix(0,ncol=4094,nrow=50)
+for(i in 1:5){
+  for(j in 1:10){
+    b[k,]<-result_KO[[i]]$res[[j]]
+    k=k+1
+  }}
+mlg.list<-b[,1:49]
+list<-c()
+k=1
+for(i in 1:49){
+  for(j in 1:50){
+    list[k]<-mlg.list[j,i]
+    k=k+1
+  }}
+mlg.sort <- as.matrix(table(list))
+mlg.sort <- mlg.sort[rev(order(mlg.sort[,1])),]
+pick_KO <- as.numeric(names(head(mlg.sort,49)))
+tmp = X_KO[, -ncol(X_KO)]
+mlg.pick_KO <- colnames(tmp)[pick_KO]
+write.table(mlg.pick_KO,"results/cross_validation_pick_49_in_con2aa_KO.txt",
+            sep="\t",quote=F)
+
+# training set
+train1_KO <- X_KO[,c(pick_KO,4094)]
+train1_KO <-data.frame(train1_KO)
+set.seed(999)
+train1.rf_KO <- randomForest(outcome_KO~., data = train1_KO,
+                          importance = TRUE)
+train1.pre_KO <- predict(train1.rf_KO, type="prob")
+p.train_KO <- train1.pre_KO[,2]
+#boxplot(p.train_KO~outcome_KO,col=c(3,4),main="Probability of NPC")
+write.table(p.train_KO,"results/con2aa.cross_validation.49makr.predict.in.train.KO.txt",
+            sep="\t",quote=F)
+train1_pre2_KO <- data.frame(outcome_KO, p.train_KO)
+train1_pre2_KO$outcome_KO <- as.factor(train1_pre2_KO$outcome_KO)
+
+# npc probability boxplots
+train1_pre2_KO$outcome_KO <- sub("0","Healthy",train1_pre2_KO$outcome_KO)
+train1_pre2_KO$outcome_KO <- sub("1","NPC",train1_pre2_KO$outcome_KO)
+compaired = list(c("Healthy", "NPC"))
+p02_KO <- ggplot(train1_pre2_KO, aes(x=outcome_KO, y=p.train_KO, fill=outcome_KO)) +
+  geom_boxplot(position=position_dodge(width =0.4),width=0.5, size = 0.4,
+               fill = "transparent",
+               outlier.shape = NA,
+               linetype = "dashed")+
+  #theme_bw()+ 
+  theme_classic()+
+  labs(x = NULL, y = "Probability of NPC", color = outcome_KO)+
+  geom_jitter(aes(color=outcome_KO),position = position_jitter(0.15),
+                size = 0.3, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper..,
+                   fill=outcome_KO), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.4,outlier.shape = NA)+
+  geom_signif(comparisons = compaired,
+            step_increase = 0.3,
+            map_signif_level = F,
+            test = wilcox.test,
+            color = "black",
+            size = 0.2,
+            textsize = 3
+            )+
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#74add1","#a60026"))+
+  scale_color_manual(values = c("#74add1","#a60026"))+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))
+ggsave(p02_KO, file = "results/KO_top49_boxplot_KO.pdf", width = 89, height = 110, unit = 'mm')
+p02_KO
+
+# KO gene family biomarker importance
+varImpPlot(train1.rf_KO, main = "Top feature importance", n.var = 19)
+write.table(train1.rf_KO$confusion, file = "results/Species_confusion_rf_KO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+imp_KO = as.data.frame(round(importance(train1.rf_KO), 2))
+imp_KO = imp_KO[order(imp_KO$MeanDecreaseAccuracy,decreasing = F),]
+write.table(imp_KO, file = "results/Species_imp_rf_KO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+
+# barplot for KO gene family biomarkers
+imp_KO = read.table("results/Species_imp_rf_KO.txt", header=T, row.names= 1, sep="\t")
+imp_KO = tail(imp_KO, n = optimal)
+imp_KO$KO = factor(rownames(imp_KO), levels = rownames(imp_KO))
+p04_KO = ggplot(imp_KO, aes(x = KO, y = MeanDecreaseAccuracy, fill = KO)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + #main_theme+
+  theme_classic()+
+  theme(legend.position = "none")+
+  scale_y_continuous(expand = c(0,0))+
+  labs(y = "Mean Decrease Accuracy", x = "KO genes")
+ggsave(paste("results/KO_top_feautre_new_KO2",".pdf", sep=""), p04_KO, width=89 * 1.5, height=110 * 1.5, unit='mm')
+p04_KO
+
+```
+
+
+KO genes
+Training set
+ROC curve
+
+```{r KO train set roc}
+# Training set
+roc1_train_KO <- roc(outcome_KO, p.train_KO,
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE)
+# get average value of AUROC and confidence intervals
+auc_train_KO = round(roc1_train_KO$auc,3)
+roc1_train_KO_2 <- plot.roc(outcome_KO, p.train_KO,
+                   ci=TRUE, print.auc=TRUE)
+ci_low_train_KO = round(roc1_train_KO_2$ci[1], 3)
+ci_high_train_KO = round(roc1_train_KO_2$ci[3], 3)
+
+# calculate 95% confidence intervals
+roc.list <- list(roc1_train_KO)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc1_train_KO, 
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+
+# plot
+p1_32_train_KO <- ggroc(roc.list, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title= element_text(size=10, family = "sans"),
+        plot.title = element_text(size = 10, family = "sans", hjust = 0.5))+
+  theme(text = element_text(family = "sans", size = 10))+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = "none")+
+  coord_fixed(ratio = 0.9)+ 
+  geom_line(size = 0.8)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_train_KO), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_train_KO, "-", ci_high_train_KO), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_32_train_KO <- p1_32_train_KO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/KO_model_auroc_test_set_KO",".pdf", sep=""), p1_36_train_KO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_32_train_KO
+
+```
+
+
+KO genes
+Testing set
+ROC curve
+
+```{r KO test set roc}
+# Testing set
+dat3_KO <- test_data_KO[,c(pick_KO,4095)]
+dat3_KO <- test_data_KO
+dat4_KO <- data.frame(dat3_KO)
+
+set.seed(999)
+test_KO <- predict(train1.rf_KO, dat4_KO, type="prob")
+conf3_KO <- as.data.frame(dat4_KO$group)
+rownames(conf3_KO) <- rownames(dat4_KO)
+colnames(conf3_KO) <- "Group"
+conf3_KO$sample <- rownames(conf3_KO)
+
+rN.test <- rownames(test_KO)
+rN.test <- sub("X","",rN.test)
+rN.conf <- rownames(conf3_KO)
+gid <- intersect(rN.test ,rN.conf)
+test_KO <- test_KO[pmatch(gid,rN.test),]
+conf3_KO <- conf3_KO[pmatch(gid,rN.conf),]
+write.table(test_KO[, 2],"results/con2aa.cross_validation.49makr.predict.in.test.KO.txt",
+            sep="\t",quote=F)
+
+# test.ROC
+outcome_KO = conf3_KO$Group
+outcome_KO <- sub("Control","0",outcome_KO)
+outcome_KO <- sub("NPC","1",outcome_KO)
+roc1_KO_test <- roc(outcome_KO, test_KO[,2],
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE)
+# AUROC
+roc_2_KO_test = roc(outcome_KO, test_KO[,2])
+roc_2_KO_test
+# get average value of AUROC and confidence intervals
+auc_test_KO = round(roc_2_KO_test$auc,3)
+roc_2_KO_test_2 <- plot.roc(outcome_KO, test_KO[,2],
+                   ci=TRUE, print.auc=TRUE)
+ci_low_test_KO = round(roc_2_KO_test_2$ci[1], 3)
+ci_high_test_KO = round(roc_2_KO_test_2$ci[3], 3)
+
+# calculate 95% confidence intervals
+roc.list <- list(roc_2_KO_test)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc_2_KO_test, 
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+
+# plot
+p1_32_test_KO <- ggroc(roc.list, legacy.axes = TRUE) +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title= element_text(size=10, family = "sans"),
+        plot.title = element_text(size = 10, family = "sans", hjust = 0.5),
+        text = element_text(family = "sans", size = 10),
+        legend.position = "none")+ coord_equal()+ coord_fixed(ratio = 0.9)+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") +
+  geom_line(size = 0.8)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_test_KO), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_test_KO, "-", ci_high_test_KO), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_32_test_KO <- p1_32_test_KO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/KO_model_auroc_test_set_new_KO",".pdf", sep=""), p1_36_test_KO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_32_test_KO
+
+p_32_all_KO = p1_32_train_KO + p1_32_test_KO
+ggsave(paste("results/KO_model_auroc_both_set_new",".pdf", sep=""), p_32_all_KO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_32_all_KO
+
+```
+
+
+
+KO
+Train and test combination (AUROC)
+
+```{r KO train and test combination}
+# Train and test set
+roc.list01 <- list(roc1_train_KO, roc_2_KO_test)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_train_KO, 
+               specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc_2_KO_test,
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_all_KO <- ggroc(roc.list01, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.6)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(values=c("#EE3A8C","#008B8B","#374383"),
+                     name= "",
+                      labels = c("Training set (AUC = 0.902 (CI = 0.867-0.937))", "Testing set (AUC = 0.906 (CI = 0.856-0.955))")
+                      )
+
+col.list = list("#EE3A8C","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:2) {
+  p_all_KO <- p_all_KO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.2,
+    inherit.aes = F)
+}
+ggsave(paste("results/KO_model_auroc_both_set_new02",".pdf", sep=""), p_all_KO, width=75 * 1.5, height=60 * 1.5, unit='mm')
+p_all_KO
+
+```
+
+
+
+
+Species + KO gene family
+
+load data and data split
+
+```{r SKO data load and split}
+## Species and KO gene families
+df3_SKO <- read.table(file = "data/species_KO_779.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(df3_SKO) <- df3_SKO$SKO
+df3_SKO <- df3_SKO[, -1]
+
+# used data
+otutab = df3_SKO
+design2 = design
+# Select by manual set group
+if (TRUE){
+  sub_design = subset(design2, Group %in% c("NPC","Control"))
+  sub_design$group  = factor(sub_design$Group, levels=c("NPC","Control"))
+}
+idx = rownames(sub_design) %in% colnames(otutab)
+sub_design = sub_design[idx,]
+sub_otutab = otutab[,rownames(sub_design)]
+
+# Create data partition
+otutab_t_SKO = as.data.frame(t(sub_otutab))
+otutab_t_SKO$group = factor(sub_design$Group, levels = c("NPC","Control"))
+
+# data split
+set.seed = 515
+otutab_t_SKO = na.omit(otutab_t_SKO)
+row.name = rownames(otutab_t_SKO)
+sam.row.name = sample(row.name, 304, replace = FALSE)
+train_data_SKO = otutab_t_SKO[sam.row.name, ]
+test_data_SKO = setdiff(otutab_t_SKO, train_data_SKO)
+
+```
+
+
+### Model training with species and KO genes
+Species + KO
+
+```{r SKO rf models}
+# load data
+dat1_SKO <- train_data_SKO
+conf_SKO <- as.data.frame(dat1_SKO$group)
+rownames(conf_SKO) <- rownames(dat1_SKO)
+colnames(conf_SKO) <- "Group"
+conf_SKO$sample <- rownames(conf_SKO)
+dat2_SKO <- dat1_SKO[, conf_SKO$Group=="Control" | conf_SKO$Group=="NPC"]
+conf2_SKO <- conf_SKO[conf_SKO$Group=="Control" | conf_SKO$Group=="NPC",]
+conf2_SKO$Group = as.factor(as.character(conf2_SKO$Group))
+outcome_SKO = conf2_SKO$Group
+outcome_SKO <- sub("Control","0",outcome_SKO)
+outcome_SKO <- sub("NPC","1",outcome_SKO)
+outcome_SKO <- as.factor(outcome_SKO)
+dat_SKO <- dat2_SKO
+X_SKO <- as.data.frame(dat_SKO)
+X_SKO$outcome_SKO = outcome_SKO
+X_SKO <- X_SKO[, -4495]
+
+# 5*10_cross validation
+set.seed(999)
+result_SKO <- replicate(5, rfcv1(X_SKO[,-ncol(X_SKO)], X_SKO$outcome_SKO, cv.fold=10,step=0.9), simplify=FALSE)
+error.cv <- sapply(result_SKO, "[[", "error.cv")
+matplot(result_SKO[[1]]$n.var, cbind(rowMeans(error.cv), error.cv), type="l",
+        lwd=c(2, rep(1, ncol(error.cv))), col=1, lty=1, log="x",
+        xlab="Number of variables", ylab="CV Error")
+error.cv.cbm <- cbind(rowMeans(error.cv), error.cv)
+cutoff <- min(error.cv.cbm[,1])+sd(error.cv.cbm[,1])
+error.cv.cbm[error.cv.cbm[,1]<cutoff,]
+#abline(v=26,col="pink",lwd=2)
+abline(v=19,col="pink",lwd=2)
+
+optimal = 19
+error.cv.cbm2 <- as.data.frame(error.cv.cbm)
+error.cv.cbm2$num <- rownames(error.cv.cbm2)
+n.var = error.cv.cbm2$num
+n.var = as.numeric(n.var)
+error.cv = error.cv.cbm2[,1:5]
+colnames(error.cv) = paste('err',1:5,sep='.')
+err.mean = apply(error.cv,1,mean)
+allerr = data.frame(num=n.var,err.mean=err.mean,error.cv)
+allerr = as.data.frame(allerr)
+# order
+write.table(allerr, file = "results/SKO_rfcv315_10_new_SKO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+p01_SKO = ggplot(allerr, aes(x=allerr$num)) +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.1), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.2), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.3), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.4), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.5), colour = 'grey') +
+  geom_line(data = allerr, aes(x = allerr$num, y = allerr$err.mean), colour = 'black') +
+  geom_vline(xintercept = optimal, colour='black', lwd=0.36, linetype="dashed") +
+  geom_hline(yintercept = 0.2165742, colour='black', lwd=0.36, linetype="dashed") +
+  coord_trans(x = "log2") +
+  scale_x_continuous(breaks = c(1, 2, 5, 10, 20, 30, 50, 100, 200, 400, 1000, 2000, 4000)) +
+  labs(x='Number of species ', y='Cross-validation error rate') +
+  annotate("text", x = optimal, y = max(allerr$err.mean), label=paste("optimal = ", optimal, sep="")) +
+  #main_theme+ 
+  theme_bw() + theme(panel.background = element_blank(),
+  panel.grid.major =element_blank(),
+  panel.grid.minor = element_blank(),
+  legend.position = "none",
+  axis.title= element_text(size=10, family = "sans"),
+  text = element_text(family = "sans", size = 10))
+ggsave(p01_SKO, file = "results/SKO_rfcv315_10_top19_new_SKO.pdf", width = 129, height = 110, unit = 'mm')
+p01_SKO
+
+# pick 32 marker by coross validation
+k=1
+b <- matrix(0,ncol=4494, nrow=50)
+for(i in 1:5){
+  for(j in 1:10){
+    b[k,]<-result_SKO[[i]]$res[[j]]
+    k=k+1
+  }}
+mlg.list<-b[,1:19]
+list<-c()
+k=1
+for(i in 1:19){
+  for(j in 1:50){
+    list[k]<-mlg.list[j,i]
+    k=k+1
+  }}
+mlg.sort <- as.matrix(table(list))
+mlg.sort <- mlg.sort[rev(order(mlg.sort[,1])),]
+pick_SKO <- as.numeric(names(head(mlg.sort,19)))
+tmp = X_SKO[,-ncol(X_SKO)]
+mlg.pick_SKO <- colnames(tmp)[pick_SKO]
+write.table(mlg.pick_SKO,"results/cross_validation_pick_19_in_con2aa_SKO.txt",
+            sep="\t",quote=F)
+
+## train.set
+train1_SKO <- X_SKO[,c(pick_SKO, 4495)]
+train1_SKO <-data.frame(train1_SKO)
+set.seed(999)
+train1.rf_SKO <- randomForest(outcome_SKO~., data =train1_SKO,
+                          importance = TRUE)
+train1.pre_SKO <- predict(train1.rf_SKO, type="prob")
+p.train_SKO <- train1.pre_SKO[, 2]
+write.table(p.train_SKO,"results/con2aa.cross_validation.19makr.predict.in.train.SKO.txt",
+            sep="\t",quote=F)
+train1_pre2_SKO <- data.frame(outcome_SKO, p.train_SKO)
+train1_pre2_SKO$outcome_SKO <- as.factor(train1_pre2_SKO$outcome_SKO)
+
+train1_pre2_SKO$outcome_SKO <- sub("0","Control",train1_pre2_SKO$outcome_SKO)
+train1_pre2_SKO$outcome_SKO <- sub("1","NPC",train1_pre2_SKO$outcome_SKO)
+compaired = list(c("Control", "NPC"))
+p02_SKO <- ggplot(train1_pre2_SKO, aes(x=outcome_SKO, y=p.train_SKO, fill=outcome_SKO)) +
+  geom_boxplot(position=position_dodge(width =0.4),width=0.5, size = 0.4,
+               fill = "transparent", outlier.shape = NA, linetype = "dashed")+
+  theme_bw()+ labs(x = NULL, y = "Probability of NPC", color = outcome_SKO)+
+  geom_jitter(aes(color=outcome_SKO),position = position_jitter(0.15),
+                size = 0.3, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.18,color="black",size = 0.4)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper..,
+                   fill=outcome_SKO), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.4,outlier.shape = NA)+
+  geom_signif(comparisons = compaired, step_increase = 0.3,
+            map_signif_level = F, test = wilcox.test, color = "black",
+            size = 0.2, textsize = 3)+
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#74add1","#a60026"))+
+  scale_color_manual(values = c("#74add1","#a60026"))+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))
+ggsave(p02_SKO, file = "results/SKO_top19_boxplot_SKO.pdf", width = 129, height = 110, unit = 'mm')
+p02_SKO
+
+# biomarker importance
+varImpPlot(train1.rf_SKO, main = "Top feature importance", n.var = 19)
+write.table(train1.rf_SKO$confusion, file = "results/SKO_confusion_rf_SKO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+imp_SKO = as.data.frame(round(importance(train1.rf_SKO), 2))
+imp_SKO = imp_SKO[order(imp_SKO$MeanDecreaseAccuracy, decreasing = F), ]
+write.table(imp_SKO, file = "results/SKO_imp_rf_SKO.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+
+imp_SKO = read.table("results/SKO_imp_rf_SKO.txt", header=T, row.names= 1, sep="\t")
+imp_SKO = tail(imp_SKO, n = optimal)
+imp_SKO$SKO = factor(rownames(imp_SKO), levels = rownames(imp_SKO))
+
+p04_SKO = ggplot(imp_SKO, aes(x = SKO, y = MeanDecreaseAccuracy, fill = SKO)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + #main_theme+
+  theme_classic()+
+  theme(legend.position = "none")+
+  scale_y_continuous(expand = c(0,0))+
+  labs(y = "Mean Decrease Accuracy", x = "Species and KO genes")
+ggsave(paste("results/SKO_top_feautre_new_SKO2",".pdf", sep=""), p04_SKO, width=119 * 1.5, height=80 * 1.5, unit='mm')
+p04_SKO
+
+library(patchwork)
+p_ko_sko <- p04_KO + p04_SKO
+p_ko_sko
+ggsave(paste("results/p_sko_02",".pdf", sep=""), p_ko_sko, width=140 * 1.5, height=110 * 1.5, unit='mm')
+
+```
+
+
+SKO
+Training set
+ROC curve
+
+```{r SKO train set roc}
+# Train set
+roc1_train_SKO <- roc(outcome_SKO, p.train_SKO,
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE
+            )
+# get average values of AUROC and confidence intervals
+auc_SKO = round(roc1_train_SKO$auc,3)
+roc1_train_SKO_2 <- plot.roc(outcome_SKO, p.train_SKO,
+                   ci=TRUE, print.auc=TRUE)
+ci_low_SKO = round(roc1_train_SKO_2$ci[1], 3)
+ci_high_SKO = round(roc1_train_SKO_2$ci[3], 3)
+
+# calculate 95% confidence intervals
+roc.list <- list(roc1_train_SKO)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc1_train_SKO,
+               specificities=seq(0, 1, 0.01)) 
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+
+# plot
+p1_29_train_SKO <- ggroc(roc.list, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title= element_text(size=10, family = "sans"),
+        plot.title = element_text(size = 10, family = "sans", hjust = 0.5),
+        text = element_text(family = "sans", size = 10),
+        legend.position = "none") + coord_equal() + coord_fixed(ratio = 0.9)+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") +
+  geom_line(size = 0.8)+
+  labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_SKO), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_SKO, "-", ci_high_SKO), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_29_train_SKO <- p1_29_train_SKO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/SKO_model_auroc_test_set_SKO",".pdf", sep=""), p1_36_train_SKO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_29_train_SKO
+
+```
+
+
+SKO
+Testing set
+ROC curve
+
+```{r SKO test set roc}
+# Testing set
+dat3_SKO <- test_data_SKO[,c(pick_SKO, 4495)]
+dat3_SKO <- test_data_SKO
+dat4_SKO <- data.frame(dat3_SKO)
+
+set.seed(999)
+test_SKO <- predict(train1.rf_SKO, dat4_SKO, type="prob")
+conf3_SKO <- as.data.frame(dat4_SKO$group)
+rownames(conf3_SKO) <- rownames(dat4_SKO)
+colnames(conf3_SKO) <- "Group"
+conf3_SKO$sample <- rownames(conf3_SKO)
+
+rN.test <- rownames(test_SKO)
+rN.test <- sub("X","",rN.test)
+rN.conf <- rownames(conf3_SKO)
+gid <- intersect(rN.test ,rN.conf)
+test_SKO <- test_SKO[pmatch(gid,rN.test),]
+conf3_SKO <- conf3_SKO[pmatch(gid,rN.conf),]
+write.table(test_SKO[, 2],"results/con2aa.cross_validation.19makr.predict.in.test.SKO.txt",
+            sep="\t",quote=F)
+
+# test.ROC
+outcome_SKO_test = conf3_SKO$Group
+outcome_SKO_test <- sub("Control","0", outcome_SKO_test)
+outcome_SKO_test <- sub("NPC","1",outcome_SKO_test)
+roc1_SKO_test <- roc(outcome_SKO_test, test_SKO[,2],
+            ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+            plot=TRUE#, percent=roc1$percent,col=2
+            )
+# AUROC
+roc_2_SKO_test = roc(outcome_SKO_test, test_SKO[,2])
+# get average values of AUROC and confidence intervals
+auc_SKO = round(roc_2_SKO_test$auc,3)
+roc_2_SKO_test_2 <- plot.roc(outcome_SKO_test, test_SKO[,2],
+                   ci=TRUE, print.auc=TRUE)
+ci_low_SKO = round(roc_2_SKO_test_2$ci[1], 3)
+ci_high_SKO = round(roc_2_SKO_test_2$ci[3], 3)
+
+# calculate 95% confidence intervals
+roc.list <- list(roc_2_SKO_test)
+ci.list <- lapply(roc.list, ci.se, specificities = seq(0, 1, l = 25))
+ciobj02 <- ci.se(roc_2_SKO_test,
+               specificities=seq(0, 1, 0.01))
+
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj02)
+dat.ci.list <- lapply(ci.list, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+
+# plot
+p1_29_test_SKO <- ggroc(roc.list, legacy.axes = TRUE) +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title= element_text(size=10, family = "sans"),
+        plot.title = element_text(size = 10, family = "sans", hjust = 0.5),
+        text = element_text(family = "sans", size = 10),
+        legend.position = "none")+ coord_equal()+ coord_fixed(ratio = 0.9)+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") +
+  geom_line(size = 0.8)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  annotate("text", x = 0.77, y = 0.18, label = paste0("AUC = ", auc_SKO), size = 3)+
+  annotate("text", x = 0.77, y = 0.08, label = paste0("CI = ",  ci_low_SKO, "-", ci_high_SKO), size = 3)+
+  scale_color_manual(values=c("#CD3278"))
+
+col.list = list("#CD3278")
+# add confidence intervals
+for(i in 1:1) {
+  p1_29_test_SKO <- p1_29_test_SKO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    #fill = i + 1,
+    fill = col.list[[i]],
+    alpha = 0.3,
+    inherit.aes = F)
+}
+#ggsave(paste("results/SKO_model_auroc_test_set_new_SKO",".pdf", sep=""), p1_36_test_SKO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p1_29_test_SKO
+
+p_29_all_SKO = p1_29_train_SKO + p1_29_test_SKO
+ggsave(paste("results/SKO_model_auroc_both_set_new",".pdf", sep=""), p_29_all_SKO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_29_all_SKO
+
+```
+
+
+
+
+SKO
+Train and test combination (AUROC)
+
+```{r KO train and test combination}
+# Train and test set
+roc.list01 <- list(roc1_train_SKO, roc_2_SKO_test)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_train_SKO, 
+               specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc_2_SKO_test,
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_all_SKO <- ggroc(roc.list01, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  #ggtitle("Train set")+
+  geom_line(size = 0.6)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(values=c("#EE3A8C","#008B8B","#374383"),
+                     name= "",
+                      labels = c("Training set (AUC = 0.876 (CI = 0.836-0.916))", "Testing set (AUC = 0.873 (CI = 0.812-0.934))")
+                      )
+
+col.list = list("#EE3A8C","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:2) {
+  p_all_SKO <- p_all_SKO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.2,
+    inherit.aes = F)
+}
+ggsave(paste("results/SKO_model_auroc_both_set_new02",".pdf", sep=""), p_all_SKO, width=75 * 1.5, height=60 * 1.5, unit='mm')
+p_all_SKO
+
+```
+
+
+
+
+### Species + KO genes roc curves
+ROC curves combined with only species, only KO genes and both species and KO genes
+
+```{r species and KO roc combined}
+# Training set
+roc.list01 <- list(roc1_species_train, roc1_train_KO, roc1_train_SKO)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_species_train,
+               specificities=seq(0, 1, 0.01)) 
+ciobj02 <- ci.se(roc1_train_KO, 
+               specificities=seq(0, 1, 0.01)) 
+ciobj04 <- ci.se(roc1_train_SKO,
+               specificities=seq(0, 1, 0.01)) 
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_all_train_S_KO <- ggroc(roc.list01, legacy.axes = TRUE) + 
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(values=c("#e20001","#2d8c46","#374383"),name= "Random forest",
+                      labels = c("Species (AUC = 0.917)", "KO (AUC = 0.902)", "Species-KO (AUC = 0.876)"))
+col.list = list("#e20001","#2d8c46","#374383")
+# add confidence intervals
+for(i in 1:3) {
+  p_all_train_S_KO <- p_all_train_S_KO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.2,
+    inherit.aes = F)
+}
+ggsave(paste("results/ALL_Species_KO_mode_auroc_train_set_model_new_all_RF",".pdf", sep=""), p_all_train_S_KO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_all_train_S_KO
+
+# Testing set
+roc.list01 <- list(roc_species_test2, roc_2_KO_test, roc_2_SKO_test)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc_species_test2,
+               specificities=seq(0, 1, 0.01)) 
+ciobj02 <- ci.se(roc_2_KO_test,
+               specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc_2_SKO_test,
+               specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_all_test_S_KO <- ggroc(roc.list01, legacy.axes = TRUE) +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(values=c("#e20001","#2d8c46","#374383"),name= "Random forest",
+                      labels = c("Species (AUROC = 0.908)", "KO (AUROC = 0.906)", "Species-KO (AUROC = 0.873)"))
+col.list = list("#e20001","#2d8c46","#374383")
+# add confidence intervals
+for(i in 1:3) {
+  p_all_test_S_KO <- p_all_test_S_KO + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.2,
+    inherit.aes = F)
+}
+ggsave(paste("results/ALL_Species_KO__mode_auroc_test_set_model_new_all_RF",".pdf", sep=""), p_all_test_S_KO, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_all_test_S_KO
+
+p779_train_test_all_SKO = p_all_train_S_KO + p_all_test_S_KO
+ggsave(paste("results/ALL_Species_KO_mode_auc_train_test_data_RF",".pdf", sep=""), p779_train_test_all_SKO, width=109 * 1.5, height=50 * 1.5, unit='mm')
+p779_train_test_all_SKO
+
+```
+
+
+
+## Species and EBV DNA model
+
+Figure 4G
+
+```{r Figure 4G}
+# Load packages
+library(openxlsx)
+library(tidyverse)
+library(multipleROC)
+library(pROC)
+
+# Load data
+data <- read.xlsx("data/data_anti.xlsx")
+POD779 <- read.table(file = "data/POD_779.txt", sep = "\t", header = T, row.names=1)
+POD779$sample <- rownames(POD779)
+data$sample <- data$SampleID
+data2 <- merge(data, POD779, by = "sample")
+
+#############################Data processing###########################################
+data <- data2
+data$NPC.biomarker <- ifelse(data$NPC.biomarker=="yes",1,0)
+colnames(data)
+
+data <- filter(data,EBV_anti=="1")
+data$`EBV-VCA-IgA` <- as.numeric(data$`EBV-VCA-IgA`)
+
+#POD and EBV DNA combination
+data$EBV_cut <- ifelse(data$EBV.DNA>24.2,2,1)
+data$VCA_cut <- ifelse(data$`EBV-VCA-IgA`>20,2,1)
+data$EBNA1_cut <- ifelse(data$`EBV-EBNA1-IgA`>0.73,2,1)
+data$EBNA1_VCA <- data$EBNA1_cut*data$VCA_cut
+data$EVP <- data$POD_779*data$VCA_cut*data$EBNA1_cut*data$EBV_cut
+
+########################Figure 4G#####################
+###PS:POD, EBV DNA, EBNA1+VCA, EBV markers+POD
+mydata <- filter(data,set=="train")
+#mydata <- data
+
+#POD_779
+################################################################################
+p1 <- multipleROC(NPC.biomarker~POD_779,data=mydata);p1$auc
+#p1 <- multipleROC(NPC.biomarker~POD,data=mydata)
+roc1_POD_779 <- roc(mydata$NPC.biomarker, mydata$POD_779,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_POD_7792 = roc(mydata$NPC.biomarker, mydata$POD_779)
+# get average values of AUROC and confidence intervals
+auc_POD_779 = round(roc1_POD_7792$auc,3)
+roc1_POD_7792_2 <- plot.roc(mydata$NPC.biomarker, mydata$POD_779,
+                        ci=TRUE, print.auc=TRUE)
+ci_POD_779 = round(roc1_POD_7792_2$ci[1], 3)
+ci_POD_779 = round(roc1_POD_7792_2$ci[3], 3)
+################################################################################
+
+#EBV_DNA
+################################################################################
+p2 <- multipleROC(NPC.biomarker~`EBV.DNA`,data=mydata);p2$auc
+roc1_EBV_DNA <- roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBV_DNA2 = roc(mydata$NPC.biomarker, mydata$EBV.DNA)
+# get average values of AUROC and confidence intervals
+auc_EBV_DNA = round(roc1_EBV_DNA2$auc,3)
+roc1_EBV_DNA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[1], 3)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[3], 3)
+################################################################################
+
+#EBNA1_VCA
+################################################################################
+p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+roc1_EBNA1_VCA <- roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBNA1_VCA2 = roc(mydata$NPC.biomarker, mydata$EBNA1_VCA)
+# get average values of AUROC and confidence intervals
+auc_EBNA1_VCA = round(roc1_EBNA1_VCA2$auc,3)
+roc1_EBNA1_VCA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[1], 3)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[3], 3)
+################################################################################
+
+#EVP
+################################################################################
+p4 <- multipleROC(NPC.biomarker~EVP,data=mydata);p4$auc
+roc1_EVP <- roc(mydata$NPC.biomarker, mydata$EVP,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EVP2 = roc(mydata$NPC.biomarker, mydata$EVP)
+# get average values of AUROC and confidence intervals
+auc_EVP = round(roc1_EVP2$auc,3)
+roc1_EVP2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EVP,
+                        ci=TRUE, print.auc=TRUE)
+ci_EVP = round(roc1_EVP2_2$ci[1], 3)
+ci_EVP = round(roc1_EVP2_2$ci[3], 3)
+################################################################################
+
+plot_ROC(list(p1,p2,p3,p4),
+         show.points = T,
+         show.eta = F,
+         show.sens = F,
+         show.AUC = T,
+         facet = F )
+rocobj1 <- roc(mydata$NPC.biomarker,mydata$POD_779)
+rocobj2 <-  roc(mydata$NPC.biomarker,mydata$EBV.DNA)
+rocobj3 <-  roc(mydata$NPC.biomarker,mydata$EBNA1_VCA)
+rocobj4 <-  roc(mydata$NPC.biomarker,mydata$EVP)
+
+result1 <- roc.test(rocobj1,rocobj4,method = "delong");result1$p.value
+result2 <- roc.test(rocobj2,rocobj4,method = "delong");result2$p.value
+result3 <- roc.test(rocobj3,rocobj4,method = "delong");result3$p.value
+
+
+# Figure 4G
+roc.list01 <- list(roc1_EVP2, roc1_EBNA1_VCA2, roc1_EBV_DNA2, roc1_POD_7792)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_EVP2,
+                 specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc1_EBNA1_VCA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc1_EBV_DNA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj05 <- ci.se(roc1_POD_7792, 
+                 specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04, ciobj05)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_figure4G <- ggroc(roc.list01, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(
+    values=c("#e20001","#FF8247","#008B8B","#374383"),
+    name= "",
+    labels = c("EVP (AUC = 0.984 (0.973-0.995))","EBNA1_VCA (AUC = 0.916 (0.886-0.946))","EBV DNA (AUC = 0.868 (0.831-0.905))","POD (AUC = 0.917 (0.884-0.949))"))
+col.list = list("#e20001","#FF8247","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:4) {
+  p_figure4G <- p_figure4G + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.15,
+    inherit.aes = F)
+}
+ggsave(paste("results/Figure_4G",".pdf", sep=""), p_figure4G, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_figure4G
+
+```
+
+
+Figure 4H
+
+```{r Figure 4H}
+data <- data2
+data$NPC.biomarker <- ifelse(data$NPC.biomarker=="yes",1,0)
+colnames(data)
+
+data <- filter(data,EBV_anti=="1")
+data$`EBV-VCA-IgA` <- as.numeric(data$`EBV-VCA-IgA`)
+
+data$EBV_cut <- ifelse(data$EBV.DNA>24.2,2,1)
+data$VCA_cut <- ifelse(data$`EBV-VCA-IgA`>20,2,1)
+data$EBNA1_cut <- ifelse(data$`EBV-EBNA1-IgA`>0.73,2,1)
+data$EBNA1_VCA <- data$EBNA1_cut*data$VCA_cut
+data$EVP <- data$POD_779*data$VCA_cut*data$EBNA1_cut*data$EBV_cut
+
+########################Figure 4H#####################
+###PS:POD, EBV DNA, EBNA1+VCA, EBV markers+POD
+mydata <- filter(data,set=="test")
+
+#POD_779
+################################################################################
+p1 <- multipleROC(NPC.biomarker~POD_779,data=mydata);p1$auc
+#p1 <- multipleROC(NPC.biomarker~POD,data=mydata)
+roc1_POD_779 <- roc(mydata$NPC.biomarker, mydata$POD_779,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_POD_7792 = roc(mydata$NPC.biomarker, mydata$POD_779)
+# get average values of AUROC and confidence intervals
+auc_POD_779 = round(roc1_POD_7792$auc,3)
+roc1_POD_7792_2 <- plot.roc(mydata$NPC.biomarker, mydata$POD_779,
+                        ci=TRUE, print.auc=TRUE)
+ci_POD_779 = round(roc1_POD_7792_2$ci[1], 3)
+ci_POD_779 = round(roc1_POD_7792_2$ci[3], 3)
+################################################################################
+
+#EBV_DNA
+################################################################################
+p2 <- multipleROC(NPC.biomarker~`EBV.DNA`,data=mydata);p2$auc
+roc1_EBV_DNA <- roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBV_DNA2 = roc(mydata$NPC.biomarker, mydata$EBV.DNA)
+# get average values of AUROC and confidence intervals
+auc_EBV_DNA = round(roc1_EBV_DNA2$auc,3)
+roc1_EBV_DNA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[1], 3)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[3], 3)
+################################################################################
+
+#EBNA1_VCA
+################################################################################
+p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+roc1_EBNA1_VCA <- roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBNA1_VCA2 = roc(mydata$NPC.biomarker, mydata$EBNA1_VCA)
+# get average values of AUROC and confidence intervals
+auc_EBNA1_VCA = round(roc1_EBNA1_VCA2$auc,3)
+roc1_EBNA1_VCA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[1], 3)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[3], 3)
+################################################################################
+
+#EVP
+################################################################################
+p4 <- multipleROC(NPC.biomarker~EVP,data=mydata);p4$auc
+roc1_EVP <- roc(mydata$NPC.biomarker, mydata$EVP,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EVP2 = roc(mydata$NPC.biomarker, mydata$EVP)
+# get average values of AUROC and confidence intervals
+auc_EVP = round(roc1_EVP2$auc,3)
+roc1_EVP2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EVP,
+                        ci=TRUE, print.auc=TRUE)
+ci_EVP = round(roc1_EVP2_2$ci[1], 3)
+ci_EVP = round(roc1_EVP2_2$ci[3], 3)
+################################################################################
+
+plot_ROC(list(p1,p2,p3,p4),
+         show.points = T,
+         show.eta = F,
+         show.sens = F,
+         show.AUC = T,
+         facet = F )
+rocobj1 <- roc(mydata$NPC.biomarker,mydata$POD_779)
+rocobj2 <-  roc(mydata$NPC.biomarker,mydata$EBV.DNA)
+rocobj3 <-  roc(mydata$NPC.biomarker,mydata$EBNA1_VCA)
+rocobj4 <-  roc(mydata$NPC.biomarker,mydata$EVP)
+
+result1 <- roc.test(rocobj1,rocobj4,method = "delong");result1$p.value
+result2 <- roc.test(rocobj2,rocobj4,method = "delong");result2$p.value
+result3 <- roc.test(rocobj3,rocobj4,method = "delong");result3$p.value
+
+
+# Figure 4G
+roc.list01 <- list(roc1_EVP2, roc1_EBNA1_VCA2, roc1_EBV_DNA2, roc1_POD_7792)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_EVP2,
+                 specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc1_EBNA1_VCA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc1_EBV_DNA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj05 <- ci.se(roc1_POD_7792, 
+                 specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04, ciobj05)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_figure4H <- ggroc(roc.list01, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(
+    values=c("#e20001","#FF8247","#008B8B","#374383"),
+    name= "",
+    labels = c("EVP (AUC = 0.989 (0.976-1.000))","EBNA1_VCA (AUC = 0.936 (0.896-0.975))","EBV DNA (AUC = 0.879 (0.828-0.931))","POD (AUC = 0.908 (0.856-0.961))"))
+col.list = list("#e20001","#FF8247","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:4) {
+  p_figure4H <- p_figure4H + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.15,
+    inherit.aes = F)
+}
+ggsave(paste("results/Figure_4F",".pdf", sep=""), p_figure4H, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_figure4H
+
+library(patchwork)
+p_figure4GH <- p_figure4G + p_figure4H
+p_figure4GH
+ggsave(paste("results/Figure_4GH",".pdf", sep=""), p_figure4GH, width=109 * 1.5, height=55 * 1.5, unit='mm')
+
+```
+
+
+
+Figure S5A
+EARLY-A
+
+```{r Figure S5A}
+
+########################Figure S5A#####################
+###PS:POD, EBV DNA, EBNA1+VCA, EBV markers+POD
+mydata <- data
+table(mydata$TNM)
+
+#I-II
+mydata <- filter(mydata,TNM%in%c("early","Healthy"))
+
+################################################################################
+p1 <- multipleROC(NPC.biomarker~POD_779,data=mydata);p1$auc
+roc1_POD_779 <- roc(mydata$NPC.biomarker, mydata$POD_779,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_POD_7792 = roc(mydata$NPC.biomarker, mydata$POD_779)
+# get average values of AUROC and confidence intervals
+auc_POD_779 = round(roc1_POD_7792$auc,3)
+roc1_POD_7792_2 <- plot.roc(mydata$NPC.biomarker, mydata$POD_779,
+                        ci=TRUE, print.auc=TRUE)
+ci_POD_779 = round(roc1_POD_7792_2$ci[1], 3)
+ci_POD_779 = round(roc1_POD_7792_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p2 <- multipleROC(NPC.biomarker~`EBV.DNA`,data=mydata);p2$auc
+roc1_EBV_DNA <- roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBV_DNA2 = roc(mydata$NPC.biomarker, mydata$EBV.DNA)
+# get average values of AUROC and confidence intervals
+auc_EBV_DNA = round(roc1_EBV_DNA2$auc,3)
+roc1_EBV_DNA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[1], 3)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[3], 3)
+################################################################################
+
+
+################################################################################
+p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+#p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+roc1_EBNA1_VCA <- roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBNA1_VCA2 = roc(mydata$NPC.biomarker, mydata$EBNA1_VCA)
+# get average values of AUROC and confidence intervals
+auc_EBNA1_VCA = round(roc1_EBNA1_VCA2$auc,3)
+roc1_EBNA1_VCA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[1], 3)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p4 <- multipleROC(NPC.biomarker~EVP,data=mydata);p4$auc
+roc1_EVP <- roc(mydata$NPC.biomarker, mydata$EVP,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EVP2 = roc(mydata$NPC.biomarker, mydata$EVP)
+# get average values of AUROC and confidence intervals
+auc_EVP = round(roc1_EVP2$auc,3)
+roc1_EVP2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EVP,
+                        ci=TRUE, print.auc=TRUE)
+ci_EVP = round(roc1_EVP2_2$ci[1], 3)
+ci_EVP = round(roc1_EVP2_2$ci[3], 3)
+################################################################################
+
+plot_ROC(list(p1,p2,p3,p4),
+         show.points = T,
+         show.eta = F,
+         show.sens = F,
+         show.AUC = T,
+         facet = F )
+rocobj1 <- roc(mydata$NPC.biomarker,mydata$POD_779)
+rocobj2 <-  roc(mydata$NPC.biomarker,mydata$EBV.DNA)
+rocobj3 <-  roc(mydata$NPC.biomarker,mydata$EBNA1_VCA)
+rocobj4 <-  roc(mydata$NPC.biomarker,mydata$EVP)
+
+result1 <- roc.test(rocobj1,rocobj4,method = "delong");result1$p.value
+result2 <- roc.test(rocobj2,rocobj4,method = "delong");result2$p.value
+result3 <- roc.test(rocobj3,rocobj4,method = "delong");result3$p.value
+
+roc.list01 <- list(roc1_EVP2, roc1_EBNA1_VCA2, roc1_EBV_DNA2, roc1_POD_7792)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_EVP2,
+                 specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc1_EBNA1_VCA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc1_EBV_DNA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj05 <- ci.se(roc1_POD_7792, 
+                 specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04, ciobj05)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_figureS5A <- ggroc(roc.list01, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(
+    values=c("#e20001","#FF8247","#008B8B","#374383"),
+    name= "",
+    labels = c("EVP (AUC = 0.973 (0.947-0.999))","EBNA1_VCA (AUC = 0.879 (0.824-0.934))","EBV DNA (AUC = 0.666 (0.581-0.752))","POD (AUC = 0.953 (0.926-0.981))"))
+col.list = list("#e20001","#FF8247","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:4) {
+  p_figureS5A <- p_figureS5A + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.15,
+    inherit.aes = F)
+}
+#ggsave(paste("results/Figure_S5A",".pdf", sep=""), p_figureS5A, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_figureS5A
+
+```
+
+
+
+Figure S5B
+III-IVA-B
+
+```{r Figure S5B}
+
+########################Figure S5B#####################
+###PS:POD, EBV DNA, EBNA1+VCA, EBV markers+POD
+mydata <- data
+table(mydata$TNM)
+
+#I-II
+mydata <- filter(mydata,TNM%in%c("stageIII","stageIVA","Healthy"))
+
+################################################################################
+p1 <- multipleROC(NPC.biomarker~POD_779,data=mydata);p1$auc
+roc1_POD_779 <- roc(mydata$NPC.biomarker, mydata$POD_779,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_POD_7792 = roc(mydata$NPC.biomarker, mydata$POD_779)
+# get average values of AUROC and confidence intervals
+auc_POD_779 = round(roc1_POD_7792$auc,3)
+roc1_POD_7792_2 <- plot.roc(mydata$NPC.biomarker, mydata$POD_779,
+                        ci=TRUE, print.auc=TRUE)
+ci_POD_779 = round(roc1_POD_7792_2$ci[1], 3)
+ci_POD_779 = round(roc1_POD_7792_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p2 <- multipleROC(NPC.biomarker~`EBV.DNA`,data=mydata);p2$auc
+roc1_EBV_DNA <- roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBV_DNA2 = roc(mydata$NPC.biomarker, mydata$EBV.DNA)
+# get average values of AUROC and confidence intervals
+auc_EBV_DNA = round(roc1_EBV_DNA2$auc,3)
+roc1_EBV_DNA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[1], 3)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[3], 3)
+################################################################################
+
+
+################################################################################
+p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+roc1_EBNA1_VCA <- roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBNA1_VCA2 = roc(mydata$NPC.biomarker, mydata$EBNA1_VCA)
+# get average values of AUROC and confidence intervals
+auc_EBNA1_VCA = round(roc1_EBNA1_VCA2$auc,3)
+roc1_EBNA1_VCA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[1], 3)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p4 <- multipleROC(NPC.biomarker~EVP,data=mydata);p4$auc
+roc1_EVP <- roc(mydata$NPC.biomarker, mydata$EVP,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EVP2 = roc(mydata$NPC.biomarker, mydata$EVP)
+# get average values of AUROC and confidence intervals
+auc_EVP = round(roc1_EVP2$auc,3)
+roc1_EVP2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EVP,
+                        ci=TRUE, print.auc=TRUE)
+ci_EVP = round(roc1_EVP2_2$ci[1], 3)
+ci_EVP = round(roc1_EVP2_2$ci[3], 3)
+################################################################################
+
+plot_ROC(list(p1,p2,p3,p4),
+         show.points = T,
+         show.eta = F,
+         show.sens = F,
+         show.AUC = T,
+         facet = F )
+rocobj1 <- roc(mydata$NPC.biomarker,mydata$POD_779)
+rocobj2 <-  roc(mydata$NPC.biomarker,mydata$EBV.DNA)
+rocobj3 <-  roc(mydata$NPC.biomarker,mydata$EBNA1_VCA)
+rocobj4 <-  roc(mydata$NPC.biomarker,mydata$EVP)
+
+result1 <- roc.test(rocobj1,rocobj4,method = "delong");result1$p.value
+result2 <- roc.test(rocobj2,rocobj4,method = "delong");result2$p.value
+result3 <- roc.test(rocobj3,rocobj4,method = "delong");result3$p.value
+
+roc.list01 <- list(roc1_EVP2, roc1_EBNA1_VCA2, roc1_EBV_DNA2, roc1_POD_7792)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_EVP2,
+                 specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc1_EBNA1_VCA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc1_EBV_DNA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj05 <- ci.se(roc1_POD_7792, 
+                 specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04, ciobj05)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_figureS5B <- ggroc(roc.list01, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(
+    values=c("#e20001","#FF8247","#008B8B","#374383"),
+    name= "",
+    labels = c("EVP (AUC = 0.987 (0.978-0.996))","EBNA1_VCA (AUC = 0.921 (0.892-0.950))","EBV DNA (AUC = 0.907 (0.870-0.945))","POD (AUC = 0.925 (0.894-0.955))"))
+col.list = list("#e20001","#FF8247","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:4) {
+  p_figureS5B <- p_figureS5B + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.15,
+    inherit.aes = F)
+}
+#ggsave(paste("results/Figure_S5B",".pdf", sep=""), p_figureS5B, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_figureS5B
+
+```
+
+
+
+Figure S5C
+IVB-C
+
+```{r Figure S5C}
+
+########################Figure S5C#####################
+###PS: POD, EBV DNA, EBNA1+VCA, EBV markers+POD
+mydata <- data
+table(mydata$TNM)
+
+#I-II
+mydata <- filter(mydata,TNM%in%c("stageIVB","Healthy"))
+
+################################################################################
+p1 <- multipleROC(NPC.biomarker~POD_779,data=mydata);p1$auc
+roc1_POD_779 <- roc(mydata$NPC.biomarker, mydata$POD_779,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_POD_7792 = roc(mydata$NPC.biomarker, mydata$POD_779)
+# get average values of AUROC and confidence intervals
+auc_POD_779 = round(roc1_POD_7792$auc,3)
+roc1_POD_7792_2 <- plot.roc(mydata$NPC.biomarker, mydata$POD_779,
+                        ci=TRUE, print.auc=TRUE)
+ci_POD_779 = round(roc1_POD_7792_2$ci[1], 3)
+ci_POD_779 = round(roc1_POD_7792_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p2 <- multipleROC(NPC.biomarker~`EBV.DNA`,data=mydata);p2$auc
+roc1_EBV_DNA <- roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBV_DNA2 = roc(mydata$NPC.biomarker, mydata$EBV.DNA)
+# get average values of AUROC and confidence intervals
+auc_EBV_DNA = round(roc1_EBV_DNA2$auc,3)
+roc1_EBV_DNA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBV.DNA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[1], 3)
+ci_EBV_DNA = round(roc1_EBV_DNA2_2$ci[3], 3)
+################################################################################
+
+
+################################################################################
+p3 <- multipleROC(NPC.biomarker~EBNA1_VCA,data=mydata);p3$auc
+roc1_EBNA1_VCA <- roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EBNA1_VCA2 = roc(mydata$NPC.biomarker, mydata$EBNA1_VCA)
+# get average values of AUROC and confidence intervals
+auc_EBNA1_VCA = round(roc1_EBNA1_VCA2$auc,3)
+roc1_EBNA1_VCA2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EBNA1_VCA,
+                        ci=TRUE, print.auc=TRUE)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[1], 3)
+ci_EBNA1_VCA = round(roc1_EBNA1_VCA2_2$ci[3], 3)
+################################################################################
+
+################################################################################
+p4 <- multipleROC(NPC.biomarker~EVP,data=mydata);p4$auc
+roc1_EVP <- roc(mydata$NPC.biomarker, mydata$EVP,
+                ci=TRUE, boot.n=100, ci.alpha=0.9, stratified=FALSE,
+                plot=TRUE
+)
+# AUROC
+roc1_EVP2 = roc(mydata$NPC.biomarker, mydata$EVP)
+# get average values of AUROC and confidence intervals
+auc_EVP = round(roc1_EVP2$auc,3)
+roc1_EVP2_2 <- plot.roc(mydata$NPC.biomarker, mydata$EVP,
+                        ci=TRUE, print.auc=TRUE)
+ci_EVP = round(roc1_EVP2_2$ci[1], 3)
+ci_EVP = round(roc1_EVP2_2$ci[3], 3)
+################################################################################
+
+plot_ROC(list(p1,p2,p3,p4),
+         show.points = T,
+         show.eta = F,
+         show.sens = F,
+         show.AUC = T,
+         facet = F )
+rocobj1 <- roc(mydata$NPC.biomarker,mydata$POD_779)
+rocobj2 <-  roc(mydata$NPC.biomarker,mydata$EBV.DNA)
+rocobj3 <-  roc(mydata$NPC.biomarker,mydata$EBNA1_VCA)
+rocobj4 <-  roc(mydata$NPC.biomarker,mydata$EVP)
+
+result1 <- roc.test(rocobj1,rocobj4,method = "delong");result1$p.value
+result2 <- roc.test(rocobj2,rocobj4,method = "delong");result2$p.value
+result3 <- roc.test(rocobj3,rocobj4,method = "delong");result3$p.value
+
+roc.list01 <- list(roc1_EVP2, roc1_EBNA1_VCA2, roc1_EBV_DNA2, roc1_POD_7792)
+ci.list01 <- lapply(roc.list01, ci.se, specificities = seq(0, 1, l = 25))
+ciobj01 <- ci.se(roc1_EVP2,
+                 specificities=seq(0, 1, 0.01))
+ciobj02 <- ci.se(roc1_EBNA1_VCA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj04 <- ci.se(roc1_EBV_DNA2,
+                 specificities=seq(0, 1, 0.01))
+ciobj05 <- ci.se(roc1_POD_7792, 
+                 specificities=seq(0, 1, 0.01))
+# confidence intervals
+ciobj3 <- as.data.frame(ciobj01, ciobj02, ciobj04, ciobj05)
+dat.ci.list <- lapply(ci.list01, function(ciobj3)
+  data.frame(x = as.numeric(rownames(ciobj3)),
+             lower = ciobj3[, 1],
+             upper = ciobj3[, 3]))
+# plot
+p_figureS5C <- ggroc(roc.list01, legacy.axes = TRUE) + #theme_minimal() +
+  theme_bw()+
+  theme(panel.background = element_blank(),
+        panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank())+
+  geom_abline(slope=1, intercept = 0, linetype = "dashed", alpha=0.5, color = "grey") + coord_equal()+
+  theme(legend.position = c(0.70, 0.17))+coord_fixed(ratio = 0.9)+
+  geom_line(size = 0.3)+labs(x = "1 - Specificity", y = "Sensitivity")+
+  scale_color_manual(
+    values=c("#e20001","#FF8247","#008B8B","#374383"),
+    name= "",
+    labels = c("EVP (AUC = 0.989 (0.980-0.998))","EBNA1_VCA (AUC = 0.955 (0.934-0.975))","EBV DNA (AUC = 0.910 (0.866-0.953))","POD (AUC = 0.880 (0.836-0.925))"))
+col.list = list("#e20001","#FF8247","#008B8B","#374383")
+# add confidence intervals
+for(i in 1:4) {
+  p_figureS5C <- p_figureS5C + geom_ribbon(
+    data = dat.ci.list[[i]],
+    aes(x = 1-x, ymin = lower, ymax = upper),
+    fill = col.list[[i]],
+    alpha = 0.15,
+    inherit.aes = F)
+}
+#ggsave(paste("results/Figure_S5C",".pdf", sep=""), p_figure4j, width=109 * 1.5, height=60 * 1.5, unit='mm')
+p_figureS5C
+
+library(patchwork)
+p_figureS5ABC <- p_figureS5A + p_figureS5B + p_figureS5C
+p_figureS5ABC
+ggsave(paste("results/Figure_S5ABC ",".pdf", sep=""), p_figureS5ABC, width=169 * 1.5, height=55 * 1.5, unit='mm')
+
+```
+
+
+
+Sensitivity and specificity (train and test set)
+
+```{r}
+library(openxlsx)
+library(tidyverse)
+library(multipleROC)
+
+#############################Data preparation.##################################
+data <- read.xlsx("data/EBV_marker_data.xlsx")
+data <- filter(data,set%in%c("train","test"))
+data$NPC.biomarker <- ifelse(data$NPC.biomarker=="yes",1,0)
+data$`EBV-VCA-IgA` <- as.numeric(data$`EBV-VCA-IgA`)
+data$VCA_cut <- ifelse(data$`EBV-VCA-IgA`>40,2,1)
+data$EBNA1_cut <- ifelse(data$`EBV-EBNA1-IgA`>1.18,2,1)
+data$EBNA1_VCA <- data$EBNA1_cut*data$VCA_cut
+data$EBV_cut <- ifelse(data$EBV.DNA>40,2,1)
+data$EVP <- data$POD*data$VCA_cut*data$EBNA1_cut*data$EBV_cut
+
+##############################training set######################################
+data_t <- filter(data,set=="train")
+##Sensitivity and specificity of POD
+p1 <- multipleROC(NPC.biomarker~POD, data_t);p1$cutoff
+cut <-p1$cutoff$POD
+data_t$tn <- ifelse(data_t$POD>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_t,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_t,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBV DNA
+p2 <- multipleROC(NPC.biomarker~EBV.DNA, data_t);p2$cutoff
+cut <-p2$cutoff$EBV.DNA
+data_t$tn <- ifelse(data_t$EBV.DNA>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_t,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_t,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBNA1+VCA
+p3<- multipleROC(NPC.biomarker~EBNA1_VCA, data_t);p3$cutoff
+cut <-p3$cutoff$EBNA1_VCA
+data_t$tn <- ifelse(data_t$EBNA1_VCA>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_t,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_t,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBNA1+VCA+EBV.DNA+POD
+p4<- multipleROC(NPC.biomarker~EVP, data_t);p4$cutoff
+cut <-p4$cutoff$EVP
+data_t$tn <- ifelse(data_t$EVP>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_t,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_t,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##############################testing set######################################
+data_v <- filter(data,set=="test")
+##Sensitivity and specificity of POD
+cut <-p1$cutoff$POD
+data_v$tn <- ifelse(data_v$POD>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_v,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_v,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBV DNA
+cut <-p2$cutoff$EBV.DNA
+data_v$tn <- ifelse(data_v$EBV.DNA>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_v,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_v,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBNA1+VCA
+cut <-p3$cutoff$EBNA1_VCA
+data_v$tn <- ifelse(data_v$EBNA1_VCA>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_v,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_v,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+##Sensitivity and specificity of EBNA1+VCA+EBV.DNA+POD
+cut <-p4$cutoff$EVP
+data_v$tn <- ifelse(data_v$EVP>=cut,1,0)
+#Sensitivity=NPC(identify)/NPC(in fact)
+data_npc <- filter(data_v,NPC.biomarker==1)
+table(data_npc$tn)
+sensitivity <- table(data_npc$tn)[[2]]/(table(data_npc$tn)[[1]]+table(data_npc$tn)[[2]])
+sensitivity
+#specificity=Healthy(identify)/Healthy(in fact)
+data_hc <- filter(data_v,NPC.biomarker==0)
+table(data_hc$tn)
+table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]])
+specificity <- 1-table(data_hc$tn)[[2]]/(table(data_hc$tn)[[1]]+table(data_hc$tn)[[2]]) 
+specificity
+
+
+#######Figure 4I#######
+df <- read.xlsx("data/sensitivity and specificity.xlsx",sheet="Training")
+my_colors <- c("#e20001CC", "#FF8247CC", "#008B8BCC", "#374383CC",
+               "#e20001CC", "#FF8247CC", "#008B8BCC", "#374383CC") 
+p5 <- ggplot(data=df, aes(y=group, x=number, fill=group)) + 
+  geom_col() + 
+  scale_fill_manual(values = my_colors) + 
+  geom_text(aes(label=number), vjust=1.5, hjust=0.5, color="white", size=5) + 
+  theme_minimal() + 
+  coord_flip() + 
+  labs(x=" ", y="Sensitivity                Specificity")+ 
+  theme(axis.line.x = element_line(color = "black"), 
+        axis.line.y = element_line(color = "black"))
+ggsave(paste("results/Figure 4I",".pdf", sep=""), p5, width=109 * 1.5, height=60 * 1.5, unit='mm')
+print(p5)
+
+#######Figure 4J#######
+df <- read.xlsx("data/sensitivity and specificity.xlsx",sheet="Testing")
+p6 <- ggplot(data=df, aes(y=group, x=number, fill=group)) + 
+  geom_col() + 
+  scale_fill_manual(values = my_colors) + 
+  geom_text(aes(label=number), vjust=1.5, hjust=0.5, color="white", size=5) + 
+  theme_minimal() + 
+  coord_flip() + 
+  labs(x=" ", y="Sensitivity                Specificity")+ 
+  theme(axis.line.x = element_line(color = "black"), 
+        axis.line.y = element_line(color = "black")) 
+ggsave(paste("results/Figure 4J",".pdf", sep=""), p6, width=109 * 1.5, height=60 * 1.5, unit='mm')
+print(p6)
+
+```
+
+

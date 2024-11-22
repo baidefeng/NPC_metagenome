@@ -1,0 +1,157 @@
+---
+title: "Fig. 2 NPC and EBV DNA-associated species"
+author: "Baidefeng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Graphlan analysis
+
+Npc associated species (141) with a graphlan plot comparing the enriched and depleted status of different npc stages (healthy, npc, I-II, III-IVA, IVB)
+Code edited from graphlan_plot by Yangjunbo. Code should be run in Linux system.
+
+```{r bash}
+# conda activate humann2
+# Remove special symbols
+# sed -i 's/\r//' metadata.txt
+# sed -i 's/Male  /Male/' metadata.txt
+# Rscript graphlan_plot1.r --input demo1/taxonomy_Species_diff.spf --design demo1/metadata.txt --type heatmap --output demo1/Heat_results_ebvdna_1
+# Rscript graphlan_plot2.r --input demo1/taxonomy_Species_diff.spf --design demo1/metadata.txt --type heatmap --output demo1/Heat_results_ebvdna_2
+```
+
+
+
+## Differential analysis for two NPC groups and healthy controls
+
+```{r boxplot}
+# load packages
+library(tidyr)
+library(reshape2)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggprism)
+library(dplyr)
+library(plyr)
+library(MMUPHin)
+library(magrittr)
+library(vegan)
+library(scales)
+library(multcompView)
+library(ggsignif)
+library(ggpubr)
+library(ggsci)
+
+mytheme = theme_bw() + theme(text = element_text(family = "sans", size = 7))+
+  theme(legend.position="bottom",
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size=10, colour="black", family = "sans", angle = 0), 
+    axis.text.x = element_text(size=10, colour="black", family = "sans", angle = 0, hjust = 0),
+    axis.title= element_text(size=10),
+    strip.text.x = element_text(size=10, angle = 0),
+    strip.text.y = element_text(size=10, angle = 0),
+    plot.title = element_text(size=10, angle = 0),
+    strip.background.x = element_rect(fill = "#E5E4E2", colour = "black", size = 0.2))+
+      theme(axis.text.x=element_text(angle=0,vjust=1, hjust=0.6))+
+  theme(axis.line = element_line(size = 0.1, colour = "black"))
+
+
+npc_ph <- read.table(file = "data/Species_P_H.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(npc_ph) <- npc_ph$ID
+
+npc_pah <- read.table(file = "data/Species_P_less4000.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(npc_pah) <- npc_pah$ID
+
+npc_pbch <- read.table(file = "data/Species_P_more4000.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(npc_pbch) <- npc_pbch$ID
+
+npc_m1 <- merge(npc_ph, npc_pah, by="ID", all = TRUE)
+npc_m2 <- merge(npc_m1, npc_pbch, by="ID", all = TRUE)
+
+rowname_diff <- as.data.frame(npc_m2$ID)
+colnames(rowname_diff) <- "ID"
+rownames(rowname_diff) <- rowname_diff$ID
+
+data_species <- read.table(file = "data/Metaphlan4_bacteria_species.txt", sep = "\t", header = T, check.names = FALSE)
+data_species <- aggregate(.~ Species, data = data_species, sum)
+rownames(data_species) = data_species$Species
+taxonomy02 <- data_species[,c(1, 2:780)]
+data779<-aggregate(.~ Species,data=taxonomy02,sum)
+rownames(data779) <- data779$Species
+taxonomy03 <- taxonomy01[!duplicated(taxonomy01$Species),]
+rownames(taxonomy03) <- taxonomy03$Species
+
+species_diff <- taxonomy03[rownames(taxonomy03) %in% rownames(rowname_diff), ]
+
+taxonomy06 <- taxonomy03[, -1]
+taxonomy06 <- taxonomy06[, 1:779]
+
+# calculate relative abundance
+taxonomy07 = as.data.frame(taxonomy06)
+
+model_species_selected <- read.table(file = "data/species_selected.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(model_species_selected) <- model_species_selected$ID
+
+mss_r_abun <- taxonomy07[rownames(taxonomy07) %in% rownames(model_species_selected), ]
+
+metadata779 <- read.table(file = "data/group_4000.txt", sep = "\t", header = T, check.names = FALSE)
+
+mss_r_abun2 <- as.data.frame(t(mss_r_abun))
+mss_r_abun2$group <- metadata779$group
+
+data_s1 <- mss_r_abun2[ , c(1,22)] # change the number to draw each plot
+data_s1 <- as.data.frame(data_s1)
+colnames(data_s1[1])
+
+# melt data from wide to long
+data_long_m<-melt(data_s1, id.vars = c("group"),
+                  measure.vars = c('Agathobaculum_butyriciproducens'), #change species here
+                  variable.name = c('Species'),
+                  value.name = 'value')
+data_long_m
+
+p = ggplot(data_long_m, aes(x=group, y=value, fill=group, color = group))+
+  geom_boxplot(width=.90,
+              size= 0.20,
+               position = position_dodge(width=1.2), 
+               outlier.colour = NA,
+               alpha=0.65
+               )+ 
+  scale_fill_d3(name="")+
+  scale_color_jama(name="")+
+  scale_fill_manual(values = c("#ea706c","#9f9c22","#37b078","#48a0d0","#b376b0"))+
+  scale_color_manual(values = c("#ea706c","#9f9c22","#37b078","#48a0d0","#b376b0"))+
+  coord_cartesian(ylim=c(0,1.5))+
+  labs(y="", x="")+
+  mytheme+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())+
+  theme(legend.position = "none")
+  #facet_grid(.~class)
+p
+ggsave(paste("results/single_species/Agathobaculum_butyriciproducens01",".pdf", sep=""), p, width=2.5, height=3.3)
+
+```
+
+

@@ -1,0 +1,631 @@
+---
+title: "Fig. 3. NPC-associated microbiome functional analysis."
+author: "Baidefeng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Confounders analysis
+
+```{r}
+# Installing R packages based on CRAN and installing them if they are not detected
+p_list = c("ggplot2", "vegan", "ggforce", "plyr", "microeco", "tidyverse",
+           "ape","phyloseq","GUniFrac","reshape2" )
+for(p in p_list){if (!requireNamespace(p)){install.packages(p)}
+    library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)}
+
+# 加载R包 Loading R packages
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(vegan)))
+suppressWarnings(suppressMessages(library(ggforce)))
+suppressWarnings(suppressMessages(library(plyr)))
+suppressWarnings(suppressMessages(library(microeco)))
+suppressWarnings(suppressMessages(library(tidyverse)))
+suppressWarnings(suppressMessages(library(ape)))
+suppressWarnings(suppressMessages(library(phyloseq)))
+suppressWarnings(suppressMessages(library(GUniFrac)))
+suppressWarnings(suppressMessages(library(reshape2)))
+
+# Bray-Curtis
+# Load data
+otu_table <-read.table(file = "data/KO_779.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(otu_table) <- otu_table$Gene_family
+otu_table <- otu_table[, -1]
+
+otu_table <- otu_table[rownames(otu_table)%in%rownames(species_selected), ]
+
+# Calculate Bray-Curtis distance
+distance_bray <- vegdist(t(otu_table), method="bray",diag=T, upper=T)
+class(distance_bray)
+
+# As matrix
+distance_bray_matrix <- as.matrix(distance_bray)
+dim(distance_bray_matrix)
+
+# As dataframe
+distance_bray_frame <- as.data.frame(distance_bray_matrix)
+dim(distance_bray_frame)
+
+# Save
+#write.table(distance_bray_frame,"data/bray_curtis_distance_npc_metacyc.txt",sep = "\t")
+write.table(distance_bray_frame,"data/bray_curtis_distance_npc_KO.txt",sep = "\t")
+
+# Load metadata and distance matrix
+sub_design = read.table("data/group.txt", header=T, row.names=1, sep="\t")
+
+# distance matrix
+m = "data/bray_curtis_distance_npc_KO"
+#m = "data/bray_curtis_distance_npc_metacyc"
+
+beta = read.table(paste(m,".txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+idx = rownames(sub_design) %in% rownames(beta)
+sub_design = sub_design[idx,]
+sub_beta = beta[rownames(sub_design),rownames(sub_design)]
+
+# PerMANOVA
+# Distance matrix
+dis = read.table(paste(m,".txt",sep=""), header=T, row.names=1, sep="\t", comment.char="")
+idx = rownames(sub_design) %in% rownames(dis)
+sub_design = sub_design[idx,]
+sub_dis = dis[rownames(sub_design),rownames(sub_design)]
+dis1 <- as.dist(sub_dis)
+
+# anonis
+adonis_result <- (adonis2(dis1~Case_status+Sex+Age+Region+smoke+drink+BMI, sub_design, permutations = 999))
+adonis_result
+
+# Load data
+data<-read.table("data/variance_explained_KO_metacyc.txt",sep = "\t",header = TRUE)
+
+data = data[order(-data[,2]),]
+
+# Plot
+p2 <- ggplot(data, aes(kindom, r2, fill=confounders))+
+  scale_fill_manual(values=c("#9c3d62",
+                             "#945893",
+                             "#7a76b7",
+                             "#fddbc7",
+                             "#f7f7f7",
+                             "#befcff",
+                             "#5ebcc2",
+                             "#46a9cb",
+                             "#005c72"))+
+  geom_bar(stat="identity",position = "stack",width=0.7)+
+  guides(fill=guide_legend(reverse=F))+
+  scale_y_continuous(expand=c(0,0))+theme_bw()+labs(x="", y="Beta-diversity variance explained (R2)")+
+  theme(panel.grid=element_blank())+
+  theme_classic()+
+  theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"))
+ggsave("results/Figure 3A.pdf", width = 12, height = 10, units = "cm")
+```
+
+
+
+
+## KO and Metacyc pathways difference analysis using MaAsLin2
+
+```{r}
+#### LOAD REQUIRED R PACKAGES ####
+suppress <- function(x){invisible(capture.output(suppressMessages(suppressWarnings(x))))}
+
+# standard data manipulation R packages
+suppress(library(dplyr))
+suppress(library(reshape2))
+suppress(library(readxl))
+suppress(library(phyloseq))
+suppress(library(tibble))
+suppress(library(openxlsx))
+suppress(library(foreach))
+suppress(library(data.table))
+suppress(library(gridExtra))
+suppress(library(scales))
+# R packages used in analysis or plotting
+suppress(library(ggplot2))
+suppress(library(ggh4x))
+suppress(library(ggfortify))
+suppress(library(ggvenn))
+suppress(library(ggrepel))
+suppress(library(vegan))
+suppress(library(pairwiseCI))
+suppress(library(vcd))
+suppress(library(ANCOMBC))
+suppress(library(Maaslin2))
+suppress(library(igraph))
+```
+
+
+## Species difference analysis
+
+```{r}
+#### PREPARE RELATIVE ABUNDANCE AND COUNT DATA ####
+metadata <- data.frame(read_xlsx('data/source_data_KO_pathways.xlsx', sheet='subject_metadata'))
+rownames(metadata) <- metadata$sample_name
+
+# read in tables that were previously generated by taxonomic profiling
+ra <- data.frame(read_xlsx('data/source_data_KO_pathways.xlsx', sheet='pathway_metacyc_ra'))
+#ra <- data.frame(read_xlsx('data/source_data_KO_pathways.xlsx', sheet='pathway_KO_group_ra2'))
+
+ra <- ra[,c('Pathway',metadata$sample_name)]
+# KO difference analysis:  substitute Pathway as Gene_Family
+#ra <- ra[,c('Gene_Family',metadata$sample_name)]
+
+# make table sample x feature
+rownames(ra) <- ra$Pathway
+ra <- data.frame(t(ra[,-1]), check.names=FALSE)
+
+# compile relative abundance data into phyloseq objects for species
+ra.sub <- ra
+ra.ps.s <- phyloseq(otu_table(as.matrix(ra.sub), taxa_are_rows=FALSE),
+                      sample_data(metadata),
+                      tax_table(as.matrix(
+                      data.frame(Pathway = colnames(ra.sub),
+                                 check.names=FALSE, row.names=colnames(ra.sub)))))
+
+#### SPECIES AND GENUS MWAS ####
+sample_data(ra.ps.s)$Case_status <- dplyr::recode(sample_data(ra.ps.s)$Case_status, 
+                                                          `NPC`=1, Control=2)
+sample_data(ra.ps.s)$Sex <- dplyr::recode(sample_data(ra.ps.s)$Sex,
+                                                        `F`=1, M=2)
+sample_data(ra.ps.s)$Age <- dplyr::recode(sample_data(ra.ps.s)$Age,
+                                                        `young`=1, old=2)
+sample_data(ra.ps.s)$smoke <- dplyr::recode(sample_data(ra.ps.s)$smoke,
+                                                        `smoke`=1, No_smoke=2)
+sample_data(ra.ps.s)$drink <- dplyr::recode(sample_data(ra.ps.s)$drink,
+                                                        `drink`=1, No_drink=2)
+sample_data(ra.ps.s)$Region <- dplyr::recode(sample_data(ra.ps.s)$Region,
+                                                        `Guangdong`=1, Other=2)
+sample_data(ra.ps.s)$BMI <- dplyr::recode(sample_data(ra.ps.s)$BMI,
+                                                        `less25`=1, more25=2)
+
+```
+
+
+
+
+MaAsLin2
+
+```{r}
+# lm.s.npc
+library(phyloseq)
+library(Maaslin2)
+ci <- function(coef, se){
+  lower.ci <- coef - 1.96*se
+  upper.ci <- coef + 1.96*se
+  return(c(lower.ci=lower.ci,upper.ci=upper.ci))
+}
+
+#ps = phyloseq(otu_table(ra.ps.s)/100, sample_data(ra.ps.s))
+ps = phyloseq(otu_table(ra.ps.s), sample_data(ra.ps.s))
+# run MaAsLin2
+input_data <- data.frame(otu_table(ps))
+library(sampling)
+sam_data = as.data.frame(sample_data(ps))
+common_columns = colnames(sam_data)[colnames(sam_data) %in% colnames(metadata)]
+input_metadata <- data.frame(sam_data[, common_columns])
+capt<- capture.output(fits <- suppressWarnings(Maaslin2(input_data, input_metadata, 
+                 output='temp_directory', 
+                 min_prevalence=0.05, 
+                #min_variance,
+                normalization='NONE', 
+                #transform='LOG',
+                transform = "NONE",
+                correction = "BH",
+                analysis_method='LM',
+                max_significance=0.05,
+                fixed_effects = c('Case_status','Sex','Age','smoke','drink','Region','BMI'),
+                random_effects = "batch2",
+                standardize=FALSE,
+                plot_heatmap=TRUE, 
+                plot_scatter=TRUE
+                )))
+
+# put back original feature names
+for (feat in seq_along(fits$results$feature)){
+  fits$results$feature[feat] <- taxa_names(ps)[make.names(taxa_names(ps)) == 
+                                              fits$results$feature[feat]]
+}
+
+input_metadata = input_metadata[!is.na(input_metadata$Case_status),]
+input_metadata = input_metadata[!is.na(input_metadata$Sex),]
+input_metadata = input_metadata[!is.na(input_metadata$Age),]
+input_metadata = input_metadata[!is.na(input_metadata$smoke),]
+input_metadata = input_metadata[!is.na(input_metadata$drink),]
+input_metadata = input_metadata[!is.na(input_metadata$BMI),]
+
+ps = phyloseq(otu_table(ps),sample_data(ra.ps.s))
+sample_data(ps) = data.frame(sample_data(ps))
+
+res <- data.frame()
+for (var in seq_along(unique(fits$results$metadata))){
+    # get variable name
+    var.name <- unique(fits$results$metadata)[var]
+    if (length(table(sample_data(ps)[,var.name])) == 2){
+      group.1.index <- sample_data(ps)[,var.name] == 
+                       names(table(sample_data(ps)[,var.name]))[2]
+      group.1.index[is.na(group.1.index)] <- FALSE
+      group.2.index <- sample_data(ps)[,var.name] == 
+                       names(table(sample_data(ps)[,var.name]))[1]
+      group.2.index[is.na(group.2.index)] <- FALSE
+      n1 <- colSums(otu_table(ps)[group.1.index,] > 0)
+      n2 <- colSums(otu_table(ps)[group.2.index,] > 0)
+      mean1 <- colMeans(otu_table(ps)[group.1.index,])
+      mean2 <- colMeans(otu_table(ps)[group.2.index,])
+    }else{
+      n1 <- rep(sum(table(sample_data(ps)[,var.name])), ntaxa(ps))
+      names(n1) <- taxa_names(ps)
+      n2 <- rep(NA, ntaxa(ps))
+      names(n2) <- taxa_names(ps)
+      mean1 <- colMeans(otu_table(ps))
+      mean2 <- rep(NA, ntaxa(ps))
+      names(mean2) <- taxa_names(ps)
+    }
+    # calculate fold change and confidence interval of fold change
+    if(length(table(sample_data(ps)[,var.name])) == 2){
+      FC <- 2^(fits$results$coef[fits$results$metadata == var.name])
+      FC.lower <- c()
+      FC.upper <- c()
+      for (coef in seq_along(fits$results$coef[fits$results$metadata == var.name])){
+        FC.lower <- c(FC.lower, 2^(ci(fits$results$coef[fits$results$metadata == 
+                                                        var.name][coef],
+                                      fits$results$stderr[fits$results$metadata == 
+                                                          var.name][coef])['lower.ci']))
+        FC.upper <- c(FC.upper, 2^(ci(fits$results$coef[fits$results$metadata == 
+                                                        var.name][coef],
+                                      fits$results$stderr[fits$results$metadata ==
+                                                          var.name][coef])['upper.ci']))
+      }
+    }else{
+      FC <- NA
+      FC.lower <- NA
+      FC.upper <- NA
+    }
+    # summarize results for variable
+    correction = "BH"
+    rvar <- data.frame(Variable=var.name,
+                      Feature=fits$results$feature[fits$results$metadata == var.name],
+                      N1=n1[fits$results$feature[fits$results$metadata == var.name]],
+                      N2=n2[fits$results$feature[fits$results$metadata == var.name]],
+                      Mean1=mean1[fits$results$feature[fits$results$metadata == var.name]],
+                      Mean2=mean2[fits$results$feature[fits$results$metadata == var.name]],
+                      Beta=fits$results$coef[fits$results$metadata == var.name],
+                      SE=fits$results$stderr[fits$results$metadata == var.name],
+                      P=fits$results$pval[fits$results$metadata == var.name],
+                      FDR=p.adjust(fits$results$pval[fits$results$metadata == var.name], 
+                                   method=correction),
+                      FC=FC, FC_lower=FC.lower, FC_upper=FC.upper,
+                      check.names=FALSE)
+    res <- rbind(res, rvar[order(rvar$P),])
+    # add untested features if they exist
+    if (nrow(rvar) != ntaxa(ps)){
+      res <- rbind(res,
+             data.frame(Variable=var.name,
+                        Feature=taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])],
+                        N1=n1[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        N2=n2[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Mean1=mean1[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Mean2=mean2[taxa_names(ps)[!(taxa_names(ps) %in% 
+                              fits$results$feature[fits$results$metadata == var.name])]],
+                        Beta=NA, SE=NA, P=NA, FDR=NA, FC=NA, FC_lower=NA, FC_upper=NA,
+                        check.names=FALSE)
+                   )
+    }
+}
+lm.s.npc = list(result.summary=res, Maaslin2.output=fits)
+write.csv(lm.s.npc[["result.summary"]], 'results/NPC_MaAsLin2_overall_Pathway_species_difference.csv')
+
+
+#### Enriched or Depleted ####
+# get data ready for plotting
+plot.data <- lm.s.npc$result.summary[lm.s.npc$result.summary$Variable == 'Group',
+                                       c('Feature','FDR','FC')]
+plot.data <- plot.data[rowSums(is.na(plot.data)) == 0,]
+
+plot.data$`NPC association` <- ifelse(plot.data[,2] < 0.05,
+                                     ifelse(plot.data[,3] > 1, 'depleted',
+                                            ifelse(plot.data[,3] < 1, 
+                                                    'enriched','opposite directions')),
+                                     'not associated')
+write.csv(plot.data, 'results/NPC_MaAsLin2_plot_data_Pathway_species_difference.csv')
+```
+
+
+
+## Pathways differential analysis
+
+Differential test between KEGG pathway data and KO gene data, calculate generalized fold change
+
+```{r KO difference}
+# Calculate Generalized fold change
+df_KO <-read.table(file = "data/KO_779.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(df_KO) <- df_KO$Gene_family
+df_KO2 <- df_KO[, -1]
+
+df_KO3 <- apply(df_KO2, 2, function(x) x/sum(x))
+df_KO4 <- df_KO3[c(-4095,-4096), ]
+feat.all <- df_KO4
+
+KO_40 <- read.table(file = "data/data_sankey.txt", sep = "\t", header = T, row.names=1)
+rownames(KO_40) <- KO_40$KO
+
+feat.all2 <- feat.all[rownames(feat.all) %in% rownames(KO_40), ]
+
+design <- read.table(file = "data/group.txt", sep = "\t", header = T, row.names=1)
+design$SampleID <- rownames(design)
+meta <- design
+stopifnot(all(meta$SampleID %in% colnames(feat.all)))
+
+library(dplyr)
+result_list <- list()
+for (f in row.names(feat.all2)) {
+  # other metrics
+  x <- feat.all2[f, meta %>% filter(group=='NPC') %>% pull(Sample_ID)]
+  y <- feat.all2[f, meta %>% filter(group=='Healthy') %>% pull(Sample_ID)]
+  # FC
+  q.p <- quantile(log10(x+1e-8), probs=seq(.1, .9, .05))
+  q.n <- quantile(log10(y+1e-8), probs=seq(.1, .9, .05))
+  fc <- sum(q.p - q.n)/length(q.p)
+  #print(fc)
+  result_list[f] <- list(col1 = fc)
+}
+result_df2 <- do.call(rbind, lapply(result_list, data.frame))
+colnames(result_df2) <- c("gFC")
+
+write.csv(result_df2, "results/gFC_KO.csv")
+```
+
+
+### KO gene family difference
+
+```{r snakey and bubble plots, echo=TRUE}
+#install.packages("remotes")
+#remotes::install_github("davidsjoberg/ggsankey")
+library(ggsankey)
+library(ggplot2)
+library(ggalluvial)
+
+df01 <- read.table(file = "data/data_sankey.txt", sep = "\t", header = T, check.names = FALSE)
+data <- df01
+df <- to_lodes_form(data[,1:ncol(data)],
+                           axes = 1:ncol(data),
+                           id = "value")
+
+# Set color
+col<- rep(c('#0ca9ce', '#78cfe5', '#c6ecf1', '#ff6f81', '#ff9c8f', '#ffc2c0','#d386bf',
+        '#cdb1d2', '#fae6f0', '#eb6fa6', '#ff88b5', '#00b1a5',"#ffa68f","#ffca75","#97bc83","#acd295",
+        "#00ada1","#009f93","#ace2da","#448c99","#00b3bc","#b8d8c9","#db888e","#e397a4","#ead0c7",
+        "#8f9898","#bfcfcb"), 6)
+# Sankey diagram
+p3 <- ggplot(df, aes(x = x, fill=stratum, label=stratum,
+               stratum = stratum, alluvium  = value), width = 0.1)+
+  geom_flow(width = 0.1,
+            curve_type = "sine",
+            alpha = 0.6,
+            color = 'white',
+            size = 0.05)+
+  geom_stratum(width = 0.1, color = "white")+
+  geom_text(stat = 'stratum', size = 3.5, color = 'black')+
+  scale_fill_manual(values = col)+
+  theme_void()+
+  theme(legend.position = 'none',
+         text = element_text(size = 18))
+p3
+
+kegg <- read.table(file = "data/data_bubble.txt", sep = "\t", header = T, check.names = FALSE)
+# set order
+kegg$KO <- factor(kegg$KO,levels = rev(kegg$KO))
+# Bubble plot
+p4 <- ggplot() + geom_point(data = kegg, 
+                            aes(x = gFC,
+                                y = KO,
+                                size = 0.01,
+                                color = -log10(padj))) + 
+  scale_color_gradient(low = "#74add1",high ="#eb6fa6")+
+  theme_bw() + labs(x = "Generalized Fold Change", y = "")+
+  theme(panel.grid = element_line(color = "#E8E8E8",
+                                   size = 0.02,
+                                   linetype = 5))+
+  theme(axis.text.y = element_blank(),
+        plot.background = element_blank(),
+        text = element_text(size = 14))+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#828282")
+p4
+
+
+library(cowplot)
+p6 <- ggdraw() +
+  draw_plot(p3, 0, 0, .8, 1)+
+  draw_plot(p4, 0.646, -0.027, .5, 0.995)
+p6
+
+pdf("results/Figure 3C.pdf", height = 7.2, width = 8)
+p6
+dev.off()
+```
+
+
+
+## Metacyc pathways lefse analysis
+
+In order to complement the pathways of KEGG annotations, here we used metacyc database pathways annotations to show the difference of pathway changes between npc and healthy controls. Pathways with FDR < 5E -14 was selected to plot here.
+
+```{r pathways}
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+# load lefse results
+lefse = read.table('data/lefse_se_20.txt',header=T,sep='\t',stringsAsFactors = F)
+lefse = as.data.frame(lefse)
+lefse = lefse[which(lefse$EnrichedGroups != ''),] 
+
+# When EnrichGroups are 2, one of the LDA groups takes a negative value
+if(length(unique(lefse$EnrichedGroups))==2){
+  lefse[lefse$EnrichedGroups==unique(lefse$EnrichedGroups)[1],4] =
+    0 - lefse[lefse$EnrichedGroups==unique(lefse$EnrichedGroups)[1],4]
+}
+
+if(length(unique(lefse$EnrichedGroups))==2){
+  lefse=lefse[order(lefse$Beta,decreasing = T),]
+} else {lefse=lefse[order(lefse$Region,lefse$Disease,lefse$LDA,decreasing = F),]}
+
+lefse$EnrichedGroups = factor(lefse$EnrichedGroups,levels = c('Healthy','NPC'))
+lefse$Biomarkernames = factor(lefse$Biomarkernames, levels = lefse$Biomarkernames)
+
+lefse = lefse %>%
+  mutate(EnrichedGroups = ordered(EnrichedGroups,
+                         levels=c("Healthy","NPC")))
+lefse$Biomarkernames = factor(lefse$Biomarkernames,levels = as.character(lefse$Biomarkernames))
+g_metacyc_lefse <- ggplot(lefse,aes(x = Biomarkernames,y = -Beta, fill = EnrichedGroups)) + 
+  scale_y_continuous(limits = c(-0.4,0.8),breaks=seq(-0.4, 0.8, 0.2))+
+  geom_bar(stat = 'identity',colour = 'black',width = 0.8,position = position_dodge(0.7))+ 
+  xlab('') + ylab('Coef. (by MaAsLin2)') + coord_flip() + bgcolor("white")+
+  theme_bw() + labs(fill = "Group")+
+  geom_hline(yintercept = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8),
+             linetype=2,
+             alpha=0.6,
+             color='black',
+             lwd=0.3)+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = c("#00C0D8","#FF6060"))+
+  scale_color_manual(values = c("#00C0D8","#FF6060"))+
+  theme(axis.text.y = element_blank(),axis.ticks = element_blank()
+        ) +
+  theme(panel.border = element_blank(), panel.grid = element_blank()) +
+  geom_text(aes(y = ifelse(lefse$Beta <0,-0.01,0.01),label=Biomarkernames),fontface=1,size=4,hjust = ifelse(lefse$Beta<0,1,0))
+ggsave(paste("results/Figure 3B",".pdf", sep=""), g_metacyc_lefse, width=149 * 1.5, height=170 * 1.5, unit='mm')
+g_metacyc_lefse
+
+```
+
+
+
+KO boxplot
+
+```{r KO boxplot}
+
+library(openxlsx)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+###############################Data preparation#################################
+ko_all <-read.table(file = "data/KO_779.txt", sep = "\t", header = T, check.names = FALSE)
+rownames(ko_all) <- ko_all$Gene_family
+ko_all <- ko_all[, -1]
+ko_all <- apply(ko_all, 2, function(x) x/sum(x)) %>%as.data.frame()
+ko_all <- t(ko_all) %>% as.data.frame() %>% rownames_to_column("sample")
+
+datax <- read.xlsx("data/EBV_DNA_data.xlsx")
+data <- inner_join(datax,ko_all,by=c("SampleID"="sample"))
+compaired = list(c("WT", "Low"), c("Low", "High"), c("WT", "High"))
+
+##################Figure 3D (LPS assembly and transport proteins)###############
+#K03643: LPS-assembly lipoprotein
+#K11719: lipopolysaccharide export system protein LptC
+#LPS <-data[,c("EBV_DNA","K03643")]
+LPS <-data[,c("EBV_DNA","K11719")]
+LPS <- as.data.frame(LPS)
+p1 <- ggplot(LPS, aes(x=LPS$EBV_DNA, y=`K11719`, fill=LPS$EBV_DNA)) + 
+  geom_boxplot(position=position_dodge(width =0.3),width=0.2, linewidth = 0.2,
+               fill = "transparent", 
+               outlier.shape = NA,
+               linetype = "dashed")+
+  theme_classic()+
+  labs(x = NULL, y = "Relative abundance of K03643", color = LPS$EBV_DNA)+
+  geom_jitter(aes(color=LPS$EBV_DNA),position = position_jitter(0.25), 
+              size = 0.25, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.25,color="black",size = 0.2)+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.25,color="black",size = 0.2)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper.., fill=Group), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.2,outlier.shape = NA)+
+  geom_signif(comparisons = compaired, step_increase = 0.1, map_signif_level = F,
+              test = wilcox.test, color = "black", size = 0.2, textsize = 2)+
+  #scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#CD5B45","#839d46","#74add1"))+
+  scale_color_manual(values = c("#CD5B45","#839d46","#74add1"))+
+  theme(panel.background = element_blank(), panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(), legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))+
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1, size = 12),
+        axis.line = element_line(linewidth = 0.2))
+ggsave("results/K11719_boxplot.pdf", p1, width=54, height=74, unit='mm')
+p1
+
+#######################Figure 3D (Butyrate metabolism)##########################
+#K00169: pyruvate ferredoxin oxidoreductase alpha subunit [EC:1.2.7.1]
+#K00172: pyruvate ferredoxin oxidoreductase gamma subunit [EC:1.2.7.1]
+#K00248: butyryl-CoA dehydrogenase [EC:1.3.8.1]
+#Butyrate <-data[,c("EBV_DNA","K00169")]
+#Butyrate <-data[,c("EBV_DNA","K00172")]
+Butyrate <-data[,c("EBV_DNA","K00248")]
+Butyrate <- as.data.frame(Butyrate)
+p2 <- ggplot(Butyrate, aes(x=Butyrate$EBV_DNA, y=`K00248`, fill=Butyrate$EBV_DNA)) + 
+  geom_boxplot(position=position_dodge(width =0.3),width=0.2, linewidth = 0.2,
+               fill = "transparent", 
+               outlier.shape = NA,
+               linetype = "dashed")+
+  theme_classic()+
+  labs(x = NULL, y = "Relative abundance of K00169", color = Butyrate$EBV_DNA)+
+  geom_jitter(aes(color=Butyrate$EBV_DNA),position = position_jitter(0.25), 
+              size = 0.25, alpha = 1)+
+  stat_boxplot(geom = "errorbar",aes(ymin=..ymax..),
+               width=0.25,color="black",size = 0.2)+
+  stat_boxplot(geom = "errorbar",aes(ymax=..ymin..),
+               width=0.25,color="black",size = 0.2)+
+  stat_boxplot(aes(ymin=..lower..,ymax=..upper.., fill=Group), color="black",
+               fill = "transparent",position=position_dodge(width =0.4),
+               width=0.5, size = 0.2,outlier.shape = NA)+
+  geom_signif(comparisons = compaired, step_increase = 0.1, map_signif_level = F,
+              test = wilcox.test, color = "black", size = 0.2, textsize = 2)+
+  #scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  scale_fill_manual(values = c("#CD5B45","#839d46","#74add1"))+
+  scale_color_manual(values = c("#CD5B45","#839d46","#74add1"))+
+  theme(panel.background = element_blank(), panel.grid.major =element_blank(),
+        panel.grid.minor = element_blank(), legend.position = "none",
+        axis.text = element_text(size=10, family = "sans"),
+        axis.title= element_text(size=10, family = "sans"),
+        text = element_text(family = "sans", size = 10))+
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1, size = 12),
+        axis.line = element_line(linewidth = 0.2))
+ggsave("results/K00248_boxplot.pdf", p2, width=54, height=74, unit='mm')
+p2
+
+```
+
+
+
